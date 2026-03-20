@@ -362,6 +362,39 @@ function getWorkPlaneWorldPoint(plane: WorkPlane, localPoint: THREE.Vector3) {
   return localPoint.clone().applyMatrix4(getPlaneTransformMatrix(plane));
 }
 
+function getSelectionLocalAnchorPoint(
+  selection: SceneSelection,
+  workPlanes: WorkPlane[]
+): THREE.Vector3 | null {
+  const plane = getPlaneBySelection(workPlanes, selection);
+  if (!plane || !selection) return null;
+
+  if (
+    selection.selectionLevel === "object" ||
+    selection.selectionLevel === "face"
+  ) {
+    return new THREE.Vector3(0, 0, 0);
+  }
+
+  if (selection.selectionLevel === "edge" && selection.subElementId) {
+    const [start, end] = getWorkPlaneEdgeLocalPoints(
+      plane,
+      selection.subElementId as WorkPlaneEdgeId
+    );
+
+    return start.clone().lerp(end, 0.5);
+  }
+
+  if (selection.selectionLevel === "vertex" && selection.subElementId) {
+    return getWorkPlaneVertexLocalPoint(
+      plane,
+      selection.subElementId as WorkPlaneVertexId
+    );
+  }
+
+  return null;
+}
+
 function getSelectionAnchorPoint(
   selection: SceneSelection,
   workPlanes: WorkPlane[]
@@ -409,6 +442,19 @@ function getDistanceBetweenSelections(
   if (!fromPoint || !toPoint) return null;
 
   return fromPoint.distanceTo(toPoint);
+}
+
+function movePlaneInSnapshot(
+  snapshot: SceneSnapshot,
+  planeId: string,
+  nextPosition: Vector3Tuple
+) {
+  return {
+    ...snapshot,
+    workPlanes: snapshot.workPlanes.map((plane) =>
+      plane.id === planeId ? { ...plane, position: nextPosition } : plane
+    ),
+  };
 }
 
 function isDimensionEligibleSelection(selection: SceneSelection) {
@@ -922,6 +968,7 @@ function DimensionOverlayTracker({
         x: (start.x + end.x) / 2,
         y: (start.y + end.y) / 2 - 18,
       };
+      const currentDistance = fromPoint.distanceTo(toPoint);
 
       return [
         {
@@ -929,7 +976,7 @@ function DimensionOverlayTracker({
           start,
           end,
           label: midpoint,
-          value: dimension.value,
+          value: currentDistance,
           fromArrow: createOverlayArrow(start, direction, 12, 5),
           toArrow: createOverlayArrow(end, { x: -direction.x, y: -direction.y }, 12, 5),
         },
@@ -3532,14 +3579,126 @@ function App() {
             return;
           }
 
-          commitSceneMutation("Edit Distance Dimension", (snapshot) => ({
-            ...snapshot,
-            dimensions: snapshot.dimensions.map((dimension) =>
-              dimension.id === dimensionId
-                ? { ...dimension, value: nextValue }
-              : dimension
-            ),
-          }));
+          const dimension = dimensionsRef.current.find(
+            (item) => item.id === dimensionId
+          );
+
+          if (!dimension) {
+            setViewportWarning("Dimension not found");
+            return;
+          }
+
+          const fromPlane = getPlaneBySelection(workPlanesRef.current, dimension.from);
+          const toPlane = getPlaneBySelection(workPlanesRef.current, dimension.to);
+          const fromPoint = getSelectionAnchorPoint(
+            dimension.from,
+            workPlanesRef.current
+          );
+          const toPoint = getSelectionAnchorPoint(
+            dimension.to,
+            workPlanesRef.current
+          );
+
+          if (!fromPlane || !toPlane || !fromPoint || !toPoint) {
+            setViewportWarning("Unable to resolve dimension references");
+            return;
+          }
+
+          if (dimension.from.objectId === dimension.to.objectId) {
+            const localFrom = getSelectionLocalAnchorPoint(
+              dimension.from,
+              workPlanesRef.current
+            );
+            const localTo = getSelectionLocalAnchorPoint(
+              dimension.to,
+              workPlanesRef.current
+            );
+
+            if (!localFrom || !localTo) {
+              setViewportWarning("Unable to resolve same-plane references");
+              return;
+            }
+
+            const localDelta = localTo.clone().sub(localFrom);
+            const usesX = Math.abs(localDelta.x) > 0.0001;
+            const usesY = Math.abs(localDelta.y) > 0.0001;
+
+            if (!usesX && !usesY) {
+              setViewportWarning("Zero-length dimensions are not editable");
+              return;
+            }
+
+            commitSceneMutation("Edit Distance Dimension", (snapshot) => {
+              const plane = snapshot.workPlanes.find(
+                (item) => item.id === fromPlane.id
+              );
+
+              if (!plane) return snapshot;
+
+              const nextScale = [...plane.scale] as Vector3Tuple;
+              const currentMeasured = getDistanceBetweenSelections(
+                dimension.from,
+                dimension.to,
+                snapshot.workPlanes
+              );
+
+              if (!currentMeasured || currentMeasured <= 0) {
+                return snapshot;
+              }
+
+              const uniformFactor = nextValue / currentMeasured;
+
+              if (usesX && usesY) {
+                nextScale[0] = Math.max(MIN_SCALE, nextScale[0] * uniformFactor);
+                nextScale[1] = Math.max(MIN_SCALE, nextScale[1] * uniformFactor);
+              } else if (usesX) {
+                nextScale[0] = Math.max(
+                  MIN_SCALE,
+                  nextValue / Math.abs(localDelta.x)
+                );
+              } else if (usesY) {
+                nextScale[1] = Math.max(
+                  MIN_SCALE,
+                  nextValue / Math.abs(localDelta.y)
+                );
+              }
+
+              return {
+                ...snapshot,
+                workPlanes: snapshot.workPlanes.map((item) =>
+                  item.id === plane.id ? { ...item, scale: nextScale } : item
+                ),
+              };
+            });
+            return;
+          }
+
+          const direction = toPoint.clone().sub(fromPoint);
+          const currentDistance = direction.length();
+
+          if (currentDistance === 0) {
+            setViewportWarning("Zero-length dimensions are not editable");
+            return;
+          }
+
+          const delta = direction
+            .normalize()
+            .multiplyScalar(nextValue - currentDistance);
+          const nextPlanePosition: Vector3Tuple = [
+            snapToIncrement(toPlane.position[0] + delta.x),
+            snapToIncrement(toPlane.position[1] + delta.y),
+            snapToIncrement(toPlane.position[2] + delta.z),
+          ];
+
+          commitSceneMutation("Edit Distance Dimension", (snapshot) => {
+            const movedSnapshot = movePlaneInSnapshot(
+              snapshot,
+              toPlane.id,
+              nextPlanePosition
+            );
+
+            return movedSnapshot;
+          });
         }}
       />
 
