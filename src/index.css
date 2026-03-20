@@ -60,6 +60,51 @@ body,
   filter: drop-shadow(0 14px 18px rgba(0, 0, 0, 0.22));
 }
 
+.undo-redo-overlay {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  z-index: 17;
+}
+
+.undo-redo-overlay__button {
+  width: 40px;
+  height: 40px;
+  border: 1px solid #4b4b51;
+  background:
+    linear-gradient(180deg, rgba(57, 57, 63, 0.28), rgba(21, 21, 24, 0)),
+    rgba(22, 22, 25, 0.96);
+  color: #ececef;
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: 4px;
+  box-shadow:
+    0 10px 18px rgba(0, 0, 0, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    opacity 140ms ease;
+}
+
+.undo-redo-overlay__button:hover:not(:disabled) {
+  border-color: #6a6a72;
+  background:
+    linear-gradient(180deg, rgba(72, 72, 79, 0.32), rgba(28, 28, 32, 0)),
+    rgba(28, 28, 32, 0.98);
+  color: #ffffff;
+}
+
+.undo-redo-overlay__button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .inspector-window {
   position: absolute;
   top: 0;

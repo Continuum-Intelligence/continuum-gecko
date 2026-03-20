@@ -2474,6 +2474,43 @@ function DimensionOverlay({
   );
 }
 
+function UndoRedoOverlay({
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+}: {
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+}) {
+  return (
+    <div className="undo-redo-overlay">
+      <button
+        className="undo-redo-overlay__button"
+        disabled={!canUndo}
+        onClick={onUndo}
+        type="button"
+        aria-label="Undo"
+        title="Undo"
+      >
+        <i className="fa-solid fa-arrow-rotate-left" />
+      </button>
+      <button
+        className="undo-redo-overlay__button"
+        disabled={!canRedo}
+        onClick={onRedo}
+        type="button"
+        aria-label="Redo"
+        title="Redo"
+      >
+        <i className="fa-solid fa-arrow-rotate-right" />
+      </button>
+    </div>
+  );
+}
+
 function HistoryWindow({
   collapsed,
   onToggleCollapsed,
@@ -3705,6 +3742,13 @@ function App() {
       <ViewCubeOverlay
         cameraStateRef={cameraStateRef}
         onViewSelect={applyView}
+      />
+
+      <UndoRedoOverlay
+        canUndo={historyIndex > 0}
+        canRedo={historyIndex < historyEntries.length - 1}
+        onUndo={undoScene}
+        onRedo={redoScene}
       />
 
       <InspectorWindow
