@@ -9,6 +9,7 @@ import type {
   MousePosition,
   SceneHistoryEntry,
   SceneSelection,
+  SketchTool,
   ToolPieAction,
   TransformFieldAxis,
   TransformFieldGroup,
@@ -506,6 +507,202 @@ export const ViewportWarning = memo(function ViewportWarning({
   message: string;
 }) {
   return <div className="viewport-warning">{message}</div>;
+});
+
+export const ToolsWindow = memo(function ToolsWindow({
+  collapsed,
+  onToggleCollapsed,
+  sketchModeActive,
+  onSetSketchModeActive,
+  activeSketchPlaneName,
+  canSketch,
+  activeSketchTool,
+  onActivateCircleTool,
+  radiusDraft,
+  diameterDraft,
+  onRadiusDraftChange,
+  onDiameterDraftChange,
+  selectedSketchCircleName,
+  extrudeDepthDraft,
+  onExtrudeDepthDraftChange,
+  onExtrude,
+  canExtrude,
+  extrudeModeActive,
+  liveExtrudeDepth,
+  onConfirmExtrude,
+  onCancelExtrude,
+  onExportStl,
+  canExportStl,
+}: {
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  sketchModeActive: boolean;
+  onSetSketchModeActive: (active: boolean) => void;
+  activeSketchPlaneName: string;
+  canSketch: boolean;
+  activeSketchTool: SketchTool;
+  onActivateCircleTool: () => void;
+  radiusDraft: string;
+  diameterDraft: string;
+  onRadiusDraftChange: (value: string) => void;
+  onDiameterDraftChange: (value: string) => void;
+  selectedSketchCircleName: string | null;
+  extrudeDepthDraft: string;
+  onExtrudeDepthDraftChange: (value: string) => void;
+  onExtrude: () => void;
+  canExtrude: boolean;
+  extrudeModeActive: boolean;
+  liveExtrudeDepth: number | null;
+  onConfirmExtrude: () => void;
+  onCancelExtrude: () => void;
+  onExportStl: () => void;
+  canExportStl: boolean;
+}) {
+  return (
+    <>
+      <button
+        className={`tools-tab${collapsed ? " tools-tab--visible" : ""}`}
+        onClick={onToggleCollapsed}
+        type="button"
+        aria-label="Expand tools"
+      >
+        Tools
+      </button>
+
+      <div className={`tools-window${collapsed ? " tools-window--hidden" : ""}`}>
+        <div className="tools-window__header">
+          <div>
+            <div className="tools-window__eyebrow">Tools</div>
+            <div className="tools-window__title">Sketch + Solid</div>
+          </div>
+          <button
+            className="tools-window__toggle"
+            onClick={onToggleCollapsed}
+            type="button"
+            aria-label="Collapse tools"
+          >
+            {"<"}
+          </button>
+        </div>
+
+        <div className="tools-window__body">
+          <div className="tools-window__section">
+            <div className="tools-window__section-title">Sketch</div>
+            <div className="tools-window__meta-row">
+              <span>Plane</span>
+              <span>{activeSketchPlaneName}</span>
+            </div>
+            <button
+              className={`tools-window__action-button${
+                sketchModeActive ? " tools-window__action-button--active" : ""
+              }`}
+              disabled={!canSketch}
+              onClick={() => onSetSketchModeActive(!sketchModeActive)}
+              type="button"
+            >
+              {sketchModeActive ? "Exit Sketch Mode" : "Start Sketch"}
+            </button>
+            <button
+              className={`tools-window__action-button${
+                activeSketchTool === "circle" ? " tools-window__action-button--active" : ""
+              }`}
+              disabled={!sketchModeActive}
+              onClick={onActivateCircleTool}
+              type="button"
+            >
+              Circle (Click + Drag)
+            </button>
+            <div className="tools-window__hint">
+              Drag from plane origin to define radius.
+            </div>
+            <div className="tools-window__input-grid">
+              <label>
+                Radius
+                <input
+                  inputMode="decimal"
+                  min={0.1}
+                  step={0.1}
+                  type="number"
+                  value={radiusDraft}
+                  onChange={(event) => onRadiusDraftChange(event.target.value)}
+                />
+              </label>
+              <label>
+                Diameter
+                <input
+                  inputMode="decimal"
+                  min={0.2}
+                  step={0.1}
+                  type="number"
+                  value={diameterDraft}
+                  onChange={(event) => onDiameterDraftChange(event.target.value)}
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="tools-window__section">
+            <div className="tools-window__section-title">Extrude</div>
+            <div className="tools-window__meta-row">
+              <span>Profile</span>
+              <span>{selectedSketchCircleName ?? "None"}</span>
+            </div>
+            <label className="tools-window__stacked-input">
+              Depth
+              <input
+                inputMode="decimal"
+                min={0.1}
+                step={0.1}
+                type="number"
+                value={extrudeDepthDraft}
+                onChange={(event) => onExtrudeDepthDraftChange(event.target.value)}
+              />
+            </label>
+            {extrudeModeActive ? (
+              <div className="tools-window__meta-row tools-window__meta-row--active">
+                <span>Live Depth</span>
+                <span>{liveExtrudeDepth ? `${liveExtrudeDepth.toFixed(2)} mm` : "0.00 mm"}</span>
+              </div>
+            ) : null}
+            <button
+              className="tools-window__action-button tools-window__action-button--primary"
+              disabled={!canExtrude}
+              onClick={onExtrude}
+              type="button"
+            >
+              {extrudeModeActive ? "Adjust in Viewport" : "Extrude (Drag)"}
+            </button>
+            {extrudeModeActive ? (
+              <>
+                <button
+                  className="tools-window__action-button tools-window__action-button--active"
+                  onClick={onConfirmExtrude}
+                  type="button"
+                >
+                  Confirm Extrude
+                </button>
+                <button
+                  className="tools-window__action-button"
+                  onClick={onCancelExtrude}
+                  type="button"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : null}
+            <button
+              className="tools-window__action-button"
+              disabled={!canExportStl}
+              onClick={onExportStl}
+              type="button"
+            >
+              Export to STL
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
 });
 
 export const DimensionOverlay = memo(function DimensionOverlay({
