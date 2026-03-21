@@ -8,6 +8,7 @@ import {
 import { OrbitControls, Text } from "@react-three/drei";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import * as THREE from "three";
+import type { PlaneSketch } from "../../../shared/sketch/types";
 import {
   DEFAULT_CAMERA_TARGET,
   WORK_PLANE_EDGE_IDS,
@@ -38,6 +39,7 @@ import type {
   WorkPlaneEdgeId,
   WorkPlaneVertexId,
 } from "../../types";
+import { PlaneSketches } from "./PlaneSketches";
 
 // ============================================
 // CAMERA SYSTEM
@@ -276,11 +278,11 @@ const WorkPlaneMesh = memo(function WorkPlaneMesh({
   );
   const edgeLineZOffset = 0.02;
   const edgeThickness = 3;
-  const vertexRadius = 2.25;
+  const vertexRadius = 2.6;
   const getRoleColor = (role: "primary" | "secondary" | null) =>
-    role === "secondary" ? "#f59e0b" : "#0f172a";
+    role ? "#050505" : "#0f172a";
   const getFaceColor = (role: "primary" | "secondary" | null) =>
-    role === "secondary" ? "#fbbf24" : "#38bdf8";
+    role ? "#050505" : "#7dd3fc";
 
   const renderEdgeHitTarget = (edgeId: WorkPlaneEdgeId) => {
     const halfWidth = plane.size.width / 2;
@@ -353,7 +355,7 @@ const WorkPlaneMesh = memo(function WorkPlaneMesh({
         <meshBasicMaterial
           color={highlight.faceRole ? getFaceColor(highlight.faceRole) : "#7dd3fc"}
           transparent
-          opacity={highlight.faceRole ? 0.3 : 0.16}
+          opacity={highlight.faceRole ? 0.44 : 0.16}
           side={THREE.DoubleSide}
           depthWrite={false}
           polygonOffset
@@ -367,7 +369,7 @@ const WorkPlaneMesh = memo(function WorkPlaneMesh({
         <lineBasicMaterial
           color={highlight.faceRole ? getRoleColor(highlight.faceRole) : "#7c8b9e"}
           transparent
-          opacity={highlight.faceRole ? 0.95 : 0.68}
+          opacity={highlight.faceRole ? 1 : 0.68}
         />
       </lineSegments>
 
@@ -395,8 +397,8 @@ const WorkPlaneMesh = memo(function WorkPlaneMesh({
               <lineBasicMaterial
                 color={getRoleColor(role)}
                 transparent
-                linewidth={8}
-                opacity={role ? 0.92 : 0}
+                linewidth={12}
+                opacity={role ? 1 : 0}
               />
             </line>
             {renderEdgeHitTarget(edgeId)}
@@ -412,14 +414,14 @@ const WorkPlaneMesh = memo(function WorkPlaneMesh({
           <group key={`vertex-highlight-${vertexId}`}>
             <mesh
               position={[localPoint.x, localPoint.y, edgeLineZOffset]}
-              scale={role ? 1 : 0.85}
+              scale={role ? 1.18 : 0.85}
               {...nonSelectableProps}
             >
-              <sphereGeometry args={[0.5, 16, 16]} />
+              <sphereGeometry args={[0.62, 16, 16]} />
               <meshBasicMaterial
                 color={getRoleColor(role)}
                 transparent
-                opacity={role ? 0.95 : 0}
+                opacity={role ? 1 : 0}
               />
             </mesh>
             {renderVertexHitTarget(vertexId)}
@@ -869,6 +871,7 @@ export const Scene3D = memo(function Scene3D({
   isAnimatingRef,
   cameraStateRef,
   workPlanes,
+  planeSketches,
   dimensions,
   primarySelection,
   secondarySelection,
@@ -887,6 +890,7 @@ export const Scene3D = memo(function Scene3D({
   isAnimatingRef: React.RefObject<boolean>;
   cameraStateRef: React.RefObject<CameraState>;
   workPlanes: WorkPlane[];
+  planeSketches: PlaneSketch[];
   dimensions: DistanceDimension[];
   primarySelection: SceneSelection;
   secondarySelection: SceneSelection;
@@ -931,6 +935,7 @@ export const Scene3D = memo(function Scene3D({
         secondarySelection={secondarySelection}
         onSelect={onSelectObject}
       />
+      <PlaneSketches workPlanes={workPlanes} planeSketches={planeSketches} />
       <TransformGizmo
         mode={transformMode}
         target={transformTarget}

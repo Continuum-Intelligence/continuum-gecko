@@ -13,7 +13,8 @@ import { isDimensionEligibleSelection, areSelectionsEqual, dimensionExists } fro
 // ============================================
 
 type ShortcutArgs = {
-  mouse: MousePosition;
+  enabled: boolean;
+  mouseRef: React.RefObject<MousePosition>;
   pieCenter: MousePosition;
   toolsPieCenter: MousePosition;
   transformPieCenter: MousePosition;
@@ -30,7 +31,6 @@ type ShortcutArgs = {
   toolsPieCancelledRef: React.RefObject<boolean>;
   transformPieOpenRef: React.RefObject<boolean>;
   transformPieCancelledRef: React.RefObject<boolean>;
-  setMouse: (value: MousePosition) => void;
   setSelectedAction: (value: PieAction) => void;
   setSelectedToolAction: (value: ToolPieAction) => void;
   setHoveredTransformMode: (value: TransformMode) => void;
@@ -62,6 +62,19 @@ type ShortcutArgs = {
 
 export function useKeyboardShortcuts(args: ShortcutArgs) {
   useEffect(() => {
+    if (!args.enabled) {
+      return;
+    }
+
+    const isTextInputActive = () => {
+      const activeElement = document.activeElement;
+      return (
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement ||
+        (activeElement instanceof HTMLElement && activeElement.isContentEditable)
+      );
+    };
+
     const updateCameraSelectionFromMouse = (
       center: MousePosition,
       current: MousePosition
@@ -143,7 +156,7 @@ export function useKeyboardShortcuts(args: ShortcutArgs) {
 
     const handleMouseMove = (event: MouseEvent) => {
       const nextMouse = { x: event.clientX, y: event.clientY };
-      args.setMouse(nextMouse);
+      args.mouseRef.current = nextMouse;
 
       if (args.pieOpenRef.current) {
         updateCameraSelectionFromMouse(args.pieCenter, nextMouse);
@@ -159,7 +172,8 @@ export function useKeyboardShortcuts(args: ShortcutArgs) {
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      const inspectorInputActive = args.inspectorInputActive();
+      const inspectorInputActive =
+        args.inspectorInputActive() || isTextInputActive();
 
       if (
         event.key === "Escape" &&
@@ -284,7 +298,7 @@ export function useKeyboardShortcuts(args: ShortcutArgs) {
         !args.transformPieOpenRef.current &&
         !args.transformDragState
       ) {
-        args.setPieCenter(args.mouse);
+        args.setPieCenter(args.mouseRef.current);
         args.setSelectedAction("origin");
         args.pieCancelledRef.current = false;
         args.setPieOpen(true);
@@ -298,7 +312,7 @@ export function useKeyboardShortcuts(args: ShortcutArgs) {
         !args.transformDragState
       ) {
         event.preventDefault();
-        args.setToolsPieCenter(args.mouse);
+        args.setToolsPieCenter(args.mouseRef.current);
         args.setSelectedToolAction("none");
         args.toolsPieCancelledRef.current = false;
         args.setToolsPieOpen(true);
@@ -312,7 +326,7 @@ export function useKeyboardShortcuts(args: ShortcutArgs) {
         !args.toolsPieOpenRef.current &&
         !args.transformDragState
       ) {
-        args.setTransformPieCenter(args.mouse);
+        args.setTransformPieCenter(args.mouseRef.current);
         args.setHoveredTransformMode(args.transformMode);
         args.transformPieCancelledRef.current = false;
         args.setTransformPieOpen(true);
