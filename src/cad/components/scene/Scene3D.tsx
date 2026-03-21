@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Canvas,
   useFrame,
@@ -28,7 +28,9 @@ import type {
   CameraState,
   DimensionOverlayItem,
   DistanceDimension,
+  SketchCircle,
   SceneSelection,
+  SolidBody,
   TransformAxis,
   TransformDragState,
   TransformMode,
@@ -40,6 +42,7 @@ import type {
   WorkPlaneVertexId,
 } from "../../types";
 import { PlaneSketches } from "./PlaneSketches";
+import { EXPORTABLE_GEOMETRY_FLAG } from "../../../utils/exportSTL";
 
 // ============================================
 // CAMERA SYSTEM
@@ -460,6 +463,562 @@ const WorkPlanes = memo(function WorkPlanes({
   );
 });
 
+const CircleCurve = memo(function CircleCurve({
+  radius,
+  zOffset = 0.06,
+  color = "#1f2937",
+  opacity = 1,
+}: {
+  radius: number;
+  zOffset?: number;
+  color?: string;
+  opacity?: number;
+}) {
+  const points = useMemo(() => {
+    const segments = 72;
+    const values: number[] = [];
+
+    for (let i = 0; i <= segments; i += 1) {
+      const t = (i / segments) * Math.PI * 2;
+      values.push(Math.cos(t) * radius, Math.sin(t) * radius, zOffset);
+    }
+
+    return new Float32Array(values);
+  }, [radius, zOffset]);
+
+  return (
+    <line {...nonSelectableProps}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[points, 3]} />
+      </bufferGeometry>
+      <lineBasicMaterial color={color} transparent opacity={opacity} depthTest={false} />
+    </line>
+  );
+});
+
+const SketchCircles = memo(function SketchCircles({
+  circles,
+  selectedSketchCircleId,
+  onSelectSketchCircle,
+}: {
+  circles: SketchCircle[];
+  selectedSketchCircleId: string | null;
+  onSelectSketchCircle: (id: string | null) => void;
+}) {
+  return (
+    <>
+      {circles.map((circle) => (
+        <group
+          key={circle.id}
+          position={circle.planePosition}
+          rotation={circle.planeRotation}
+          scale={circle.planeScale}
+        >
+          <group position={[circle.center[0], circle.center[1], 0]}>
+            <CircleCurve
+              radius={circle.radius}
+              color={selectedSketchCircleId === circle.id ? "#0f172a" : "#1f2937"}
+              opacity={selectedSketchCircleId === circle.id ? 1 : 0.92}
+              zOffset={0.085}
+            />
+            <mesh position={[0, 0, 0.07]} {...nonSelectableProps}>
+              <sphereGeometry args={[0.42, 20, 20]} />
+              <meshBasicMaterial
+                color={selectedSketchCircleId === circle.id ? "#0f172a" : "#334155"}
+                transparent
+                opacity={0.9}
+                depthWrite={false}
+              />
+            </mesh>
+            <mesh {...nonSelectableProps}>
+              <ringGeometry
+                args={[
+                  Math.max(0.1, circle.radius - 0.18),
+                  circle.radius + 0.18,
+                  96,
+                ]}
+              />
+              <meshBasicMaterial
+                transparent
+                opacity={selectedSketchCircleId === circle.id ? 0.6 : 0.34}
+                color={selectedSketchCircleId === circle.id ? "#111827" : "#334155"}
+                side={THREE.DoubleSide}
+                depthWrite={false}
+              />
+            </mesh>
+            <mesh
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelectSketchCircle(circle.id);
+              }}
+            >
+              <circleGeometry args={[Math.max(0.2, circle.radius), 96]} />
+              <meshBasicMaterial
+                transparent
+                opacity={selectedSketchCircleId === circle.id ? 0.1 : 0.04}
+                color={selectedSketchCircleId === circle.id ? "#0f172a" : "#334155"}
+                side={THREE.DoubleSide}
+                depthWrite={false}
+              />
+            </mesh>
+            <mesh
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelectSketchCircle(circle.id);
+              }}
+            >
+              <ringGeometry
+                args={[
+                  Math.max(0.1, circle.radius - 1.2),
+                  circle.radius + 1.2,
+                  72,
+                ]}
+              />
+              <meshBasicMaterial
+                transparent
+                opacity={selectedSketchCircleId === circle.id ? 0.16 : 0.06}
+                color={selectedSketchCircleId === circle.id ? "#e2e8f0" : "#cbd5e1"}
+                side={THREE.DoubleSide}
+                depthWrite={false}
+              />
+            </mesh>
+          </group>
+        </group>
+      ))}
+    </>
+  );
+});
+
+const SketchCirclePreview = memo(function SketchCirclePreview({
+  preview,
+}: {
+  preview: {
+    planePosition: Vector3Tuple;
+    planeRotation: Vector3Tuple;
+    planeScale: Vector3Tuple;
+    center: [number, number];
+    radius: number;
+  } | null;
+}) {
+  if (!preview || preview.radius <= 0) return null;
+
+  return (
+    <group
+      position={preview.planePosition}
+      rotation={preview.planeRotation}
+      scale={preview.planeScale}
+    >
+      <group position={[preview.center[0], preview.center[1], 0]}>
+        <CircleCurve
+          radius={preview.radius}
+          zOffset={0.1}
+          color="#0b1220"
+          opacity={1}
+        />
+        <mesh position={[0, 0, 0.08]} {...nonSelectableProps}>
+          <sphereGeometry args={[0.45, 20, 20]} />
+          <meshBasicMaterial color="#0b1220" transparent opacity={0.9} depthWrite={false} />
+        </mesh>
+        <mesh {...nonSelectableProps}>
+          <ringGeometry
+            args={[Math.max(0.1, preview.radius - 0.22), preview.radius + 0.22, 96]}
+          />
+          <meshBasicMaterial
+            transparent
+            opacity={0.7}
+            color="#0b1220"
+            side={THREE.DoubleSide}
+            depthWrite={false}
+          />
+        </mesh>
+      </group>
+    </group>
+  );
+});
+
+const ExtrudePreviewBody = memo(function ExtrudePreviewBody({
+  preview,
+}: {
+  preview: {
+    planePosition: Vector3Tuple;
+    planeRotation: Vector3Tuple;
+    planeScale: Vector3Tuple;
+    center: [number, number];
+    radius: number;
+    depth: number;
+    direction: 1 | -1;
+  } | null;
+}) {
+  if (!preview || preview.depth <= 0) return null;
+
+  return (
+    <group
+      position={preview.planePosition}
+      rotation={preview.planeRotation}
+      scale={preview.planeScale}
+    >
+      <mesh
+        position={[preview.center[0], preview.center[1], (preview.direction * preview.depth) / 2]}
+        rotation={[Math.PI / 2, 0, 0]}
+        {...nonSelectableProps}
+      >
+        <cylinderGeometry args={[preview.radius, preview.radius, preview.depth, 72]} />
+        <meshStandardMaterial
+          color="#97a9be"
+          transparent
+          opacity={0.5}
+          metalness={0.1}
+          roughness={0.36}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+});
+
+const SolidBodyMesh = memo(function SolidBodyMesh({
+  body,
+  selected,
+  onSelectSolidBody,
+}: {
+  body: SolidBody;
+  selected: boolean;
+  onSelectSolidBody: (id: string | null) => void;
+}) {
+  const geometry = useMemo(
+    () => new THREE.CylinderGeometry(body.radius, body.radius, body.depth, 64),
+    [body.depth, body.radius]
+  );
+  const edgeGeometry = useMemo(() => new THREE.EdgesGeometry(geometry), [geometry]);
+
+  useEffect(
+    () => () => {
+      edgeGeometry.dispose();
+      geometry.dispose();
+    },
+    [edgeGeometry, geometry]
+  );
+
+  return (
+    <group
+      position={body.planePosition}
+      rotation={body.planeRotation}
+      scale={body.planeScale}
+    >
+      <mesh
+        position={[
+          body.center[0],
+          body.center[1],
+          ((body.direction ?? 1) * body.depth) / 2,
+        ]}
+        rotation={[Math.PI / 2, 0, 0]}
+        userData={{ [EXPORTABLE_GEOMETRY_FLAG]: true }}
+        onClick={(event) => {
+          event.stopPropagation();
+          onSelectSolidBody(body.id);
+        }}
+      >
+        <primitive attach="geometry" object={geometry} />
+        <meshStandardMaterial
+          color={selected ? "#dbe4f0" : "#b8c3d2"}
+          metalness={0.12}
+          roughness={0.28}
+        />
+      </mesh>
+      <lineSegments
+        position={[
+          body.center[0],
+          body.center[1],
+          ((body.direction ?? 1) * body.depth) / 2,
+        ]}
+        rotation={[Math.PI / 2, 0, 0]}
+        geometry={edgeGeometry}
+        {...nonSelectableProps}
+      >
+        <lineBasicMaterial
+          color={selected ? "#0f172a" : "#334155"}
+          transparent
+          opacity={0.52}
+        />
+      </lineSegments>
+    </group>
+  );
+});
+
+const SolidBodies = memo(function SolidBodies({
+  solidBodies,
+  selectedSolidBodyId,
+  onSelectSolidBody,
+}: {
+  solidBodies: SolidBody[];
+  selectedSolidBodyId: string | null;
+  onSelectSolidBody: (id: string | null) => void;
+}) {
+  return (
+    <group>
+      {solidBodies.map((body) => {
+        const selected = selectedSolidBodyId === body.id;
+        return (
+          <SolidBodyMesh
+            key={body.id}
+            body={body}
+            selected={selected}
+            onSelectSolidBody={onSelectSolidBody}
+          />
+        );
+      })}
+    </group>
+  );
+});
+
+function ExtrudeArrowManipulator({
+  preview,
+  onDepthChange,
+  onConfirm,
+  onCancel,
+}: {
+  preview: {
+    planePosition: Vector3Tuple;
+    planeRotation: Vector3Tuple;
+    planeScale: Vector3Tuple;
+    center: [number, number];
+    depth: number;
+    direction: 1 | -1;
+    radius: number;
+  } | null;
+  onDepthChange: (signedDepth: number) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const { camera, gl } = useThree();
+  const [dragging, setDragging] = useState(false);
+  const previewRef = useRef(preview);
+  const draggingRef = useRef(false);
+
+  useEffect(() => {
+    previewRef.current = preview;
+  }, [preview]);
+
+  useEffect(() => {
+    draggingRef.current = dragging;
+  }, [dragging]);
+
+  useEffect(() => {
+    const raycaster = new THREE.Raycaster();
+
+    const computeSignedDepth = (event: PointerEvent) => {
+      const currentPreview = previewRef.current;
+      if (!currentPreview) return null;
+
+      const origin = new THREE.Vector3(...currentPreview.planePosition);
+      const rotationEuler = new THREE.Euler(...currentPreview.planeRotation);
+      const normal = new THREE.Vector3(0, 0, 1).applyEuler(rotationEuler).normalize();
+      const basisX = new THREE.Vector3(1, 0, 0).applyEuler(rotationEuler);
+      const basisY = new THREE.Vector3(0, 1, 0).applyEuler(rotationEuler);
+      const worldCenter = origin
+        .clone()
+        .addScaledVector(basisX, currentPreview.center[0] * currentPreview.planeScale[0])
+        .addScaledVector(basisY, currentPreview.center[1] * currentPreview.planeScale[1]);
+
+      const rect = gl.domElement.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+
+      const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
+
+      const linePoint = worldCenter;
+      const lineDir = normal;
+      const rayOrigin = raycaster.ray.origin;
+      const rayDir = raycaster.ray.direction;
+
+      const w0 = linePoint.clone().sub(rayOrigin);
+      const b = lineDir.dot(rayDir);
+      const d = lineDir.dot(w0);
+      const e = rayDir.dot(w0);
+      const denom = 1 - b * b;
+
+      if (Math.abs(denom) > 1e-5) {
+        const worldSignedDepth = (b * e - d) / denom;
+        return worldSignedDepth / Math.max(0.0001, currentPreview.planeScale[2]);
+      }
+
+      return null;
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!draggingRef.current) return;
+      const signedDepth = computeSignedDepth(event);
+      if (signedDepth === null) return;
+      onDepthChange(signedDepth);
+    };
+
+    const handlePointerUp = () => {
+      if (!draggingRef.current) return;
+      setDragging(false);
+      onConfirm();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setDragging(false);
+        onCancel();
+      }
+    };
+
+    gl.domElement.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      gl.domElement.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [camera, gl, onCancel, onConfirm, onDepthChange]);
+
+  if (!preview) return null;
+
+  const handleBaseZ = preview.direction * preview.depth;
+  const arrowStemLength = 9;
+  const arrowHeadOffset = handleBaseZ + arrowStemLength;
+
+  return (
+    <group
+      position={preview.planePosition}
+      rotation={preview.planeRotation}
+      scale={preview.planeScale}
+    >
+      <group position={[preview.center[0], preview.center[1], 0]}>
+        <line {...nonSelectableProps}>
+          <bufferGeometry>
+            <bufferAttribute
+              attach="attributes-position"
+              args={[new Float32Array([0, 0, handleBaseZ, 0, 0, arrowHeadOffset]), 3]}
+            />
+          </bufferGeometry>
+          <lineBasicMaterial color="#0f172a" transparent opacity={0.95} />
+        </line>
+
+        <mesh
+          position={[0, 0, arrowHeadOffset]}
+          rotation={[0, 0, preview.direction > 0 ? 0 : Math.PI]}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            if (event.button !== 0) return;
+            setDragging(true);
+          }}
+        >
+          <coneGeometry args={[1.5, 3.4, 24]} />
+          <meshStandardMaterial color="#1e293b" metalness={0.15} roughness={0.35} />
+        </mesh>
+
+        <mesh
+          position={[0, 0, handleBaseZ + arrowStemLength / 2]}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            if (event.button !== 0) return;
+            setDragging(true);
+          }}
+        >
+          <cylinderGeometry args={[0.35, 0.35, arrowStemLength, 20]} />
+          <meshStandardMaterial color="#334155" metalness={0.12} roughness={0.4} />
+        </mesh>
+
+        <mesh
+          position={[0, 0, handleBaseZ + arrowStemLength / 2]}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            if (event.button !== 0) return;
+            setDragging(true);
+          }}
+        >
+          <cylinderGeometry args={[2.2, 2.2, arrowStemLength + 4, 18]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
+function SketchPlaneInteraction({
+  sketchModeActive,
+  activeSketchPlane,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+}: {
+  sketchModeActive: boolean;
+  activeSketchPlane: {
+    id: string;
+    position: Vector3Tuple;
+    rotation: Vector3Tuple;
+    scale: Vector3Tuple;
+  } | null;
+  onPointerDown: (
+    localPoint: [number, number],
+    planeState: {
+      id: string;
+      position: Vector3Tuple;
+      rotation: Vector3Tuple;
+      scale: Vector3Tuple;
+    }
+  ) => void;
+  onPointerMove: (localPoint: [number, number]) => void;
+  onPointerUp: () => void;
+}) {
+  const inverseSketchMatrix = useMemo(() => {
+    if (!activeSketchPlane) return null;
+    const matrix = new THREE.Matrix4().compose(
+      new THREE.Vector3(...activeSketchPlane.position),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(...activeSketchPlane.rotation)),
+      new THREE.Vector3(...activeSketchPlane.scale)
+    );
+    return matrix.invert();
+  }, [activeSketchPlane]);
+
+  const toLocalPoint = useCallback(
+    (worldPoint: THREE.Vector3): [number, number] => {
+      if (!inverseSketchMatrix) return [0, 0];
+      const local = worldPoint.clone().applyMatrix4(inverseSketchMatrix);
+      return [local.x, local.y];
+    },
+    [inverseSketchMatrix]
+  );
+
+  if (!sketchModeActive || !activeSketchPlane) return null;
+
+  return (
+    <group
+      position={activeSketchPlane.position}
+      rotation={activeSketchPlane.rotation}
+      scale={activeSketchPlane.scale}
+    >
+      <mesh
+        position={[0, 0, 0.05]}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          onPointerDown(
+            toLocalPoint(event.point.clone()),
+            activeSketchPlane
+          );
+        }}
+        onPointerMove={(event) => {
+          event.stopPropagation();
+          onPointerMove(toLocalPoint(event.point.clone()));
+        }}
+        onPointerUp={(event) => {
+          event.stopPropagation();
+          onPointerUp();
+        }}
+      >
+        <planeGeometry args={[1200, 1200]} />
+        <meshBasicMaterial transparent opacity={0.001} side={THREE.DoubleSide} />
+      </mesh>
+    </group>
+  );
+}
+
 // ============================================
 // GIZMOS
 // ============================================
@@ -872,10 +1431,26 @@ export const Scene3D = memo(function Scene3D({
   cameraStateRef,
   workPlanes,
   planeSketches,
+  sketchCircles,
+  sketchCirclePreview,
+  extrudePreview,
+  solidBodies,
+  selectedSketchCircleId,
+  selectedSolidBodyId,
+  sketchModeActive,
+  activeSketchPlane,
   dimensions,
   primarySelection,
   secondarySelection,
   onSelectObject,
+  onSelectSketchCircle,
+  onSelectSolidBody,
+  onSketchPlanePointerDown,
+  onSketchPlanePointerMove,
+  onSketchPlanePointerUp,
+  onExtrudePreviewDepthChange,
+  onConfirmExtrudePreview,
+  onCancelExtrudePreview,
   onDimensionOverlayChange,
   transformMode,
   transformTarget,
@@ -883,6 +1458,7 @@ export const Scene3D = memo(function Scene3D({
   transformDragState,
   onHoverTransformAxis,
   onTransformAxisPointerDown,
+  exportRootRef,
 }: {
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
   desiredPositionRef: React.RefObject<THREE.Vector3>;
@@ -891,10 +1467,56 @@ export const Scene3D = memo(function Scene3D({
   cameraStateRef: React.RefObject<CameraState>;
   workPlanes: WorkPlane[];
   planeSketches: PlaneSketch[];
+  sketchCircles: SketchCircle[];
+  sketchCirclePreview: {
+    planeId: string;
+    planePosition: Vector3Tuple;
+    planeRotation: Vector3Tuple;
+    planeScale: Vector3Tuple;
+    center: [number, number];
+    radius: number;
+    dragging: boolean;
+  } | null;
+  extrudePreview: {
+    sourceSketchId: string;
+    planePosition: Vector3Tuple;
+    planeRotation: Vector3Tuple;
+    planeScale: Vector3Tuple;
+    center: [number, number];
+    radius: number;
+    depth: number;
+    direction: 1 | -1;
+  } | null;
+  solidBodies: SolidBody[];
+  selectedSketchCircleId: string | null;
+  selectedSolidBodyId: string | null;
+  sketchModeActive: boolean;
+  activeSketchPlane: {
+    id: string;
+    position: Vector3Tuple;
+    rotation: Vector3Tuple;
+    scale: Vector3Tuple;
+  } | null;
   dimensions: DistanceDimension[];
   primarySelection: SceneSelection;
   secondarySelection: SceneSelection;
   onSelectObject: (selection: SceneSelection, additive: boolean) => void;
+  onSelectSketchCircle: (id: string | null) => void;
+  onSelectSolidBody: (id: string | null) => void;
+  onSketchPlanePointerDown: (
+    localPoint: [number, number],
+    planeState: {
+      id: string;
+      position: Vector3Tuple;
+      rotation: Vector3Tuple;
+      scale: Vector3Tuple;
+    }
+  ) => void;
+  onSketchPlanePointerMove: (localPoint: [number, number]) => void;
+  onSketchPlanePointerUp: () => void;
+  onExtrudePreviewDepthChange: (signedDepth: number) => void;
+  onConfirmExtrudePreview: () => void;
+  onCancelExtrudePreview: () => void;
   onDimensionOverlayChange: (items: DimensionOverlayItem[]) => void;
   transformMode: TransformMode;
   transformTarget: TransformTarget | null;
@@ -905,12 +1527,16 @@ export const Scene3D = memo(function Scene3D({
     axis: Exclude<TransformAxis, null>,
     event: ThreeEvent<PointerEvent>
   ) => void;
+  exportRootRef: React.RefObject<THREE.Group | null>;
 }) {
   return (
     <Canvas
       camera={{ position: [5, -5, 5], fov: 50, near: 0.1, far: 1000 }}
       style={{ background: "#f5f6f8" }}
       onPointerMissed={(event) => {
+        if (extrudePreview !== null) return;
+        onSelectSketchCircle(null);
+        onSelectSolidBody(null);
         onSelectObject(null, !!event.shiftKey);
       }}
     >
@@ -936,6 +1562,33 @@ export const Scene3D = memo(function Scene3D({
         onSelect={onSelectObject}
       />
       <PlaneSketches workPlanes={workPlanes} planeSketches={planeSketches} />
+      <SketchPlaneInteraction
+        sketchModeActive={sketchModeActive}
+        activeSketchPlane={activeSketchPlane}
+        onPointerDown={onSketchPlanePointerDown}
+        onPointerMove={onSketchPlanePointerMove}
+        onPointerUp={onSketchPlanePointerUp}
+      />
+      <SketchCircles
+        circles={sketchCircles}
+        selectedSketchCircleId={selectedSketchCircleId}
+        onSelectSketchCircle={onSelectSketchCircle}
+      />
+      <SketchCirclePreview preview={sketchCirclePreview} />
+      <ExtrudePreviewBody preview={extrudePreview} />
+      <ExtrudeArrowManipulator
+        preview={extrudePreview}
+        onDepthChange={onExtrudePreviewDepthChange}
+        onConfirm={onConfirmExtrudePreview}
+        onCancel={onCancelExtrudePreview}
+      />
+      <group ref={exportRootRef}>
+        <SolidBodies
+          solidBodies={solidBodies}
+          selectedSolidBodyId={selectedSolidBodyId}
+          onSelectSolidBody={onSelectSolidBody}
+        />
+      </group>
       <TransformGizmo
         mode={transformMode}
         target={transformTarget}
@@ -950,7 +1603,7 @@ export const Scene3D = memo(function Scene3D({
       <OrbitControls
         ref={controlsRef}
         target={[0, 0, 0]}
-        enabled={!transformDragState}
+        enabled={!transformDragState && extrudePreview === null}
       />
     </Canvas>
   );
