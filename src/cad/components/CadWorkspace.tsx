@@ -13,6 +13,7 @@ import {
   DimensionOverlay,
   HistoryWindow,
   InspectorWindow,
+  ToolsWindow,
   ToolsPieMenu,
   TransformPieMenu,
   UndoRedoOverlay,
@@ -48,9 +49,12 @@ import type {
   EditingTransformField,
   MousePosition,
   PieAction,
+  SketchCircle,
+  SketchTool,
   SceneHistoryEntry,
   SceneSelection,
   SceneSnapshot,
+  SolidBody,
   ToolPieAction,
   TransformAxis,
   TransformDragState,
@@ -66,6 +70,7 @@ import type {
   HierarchySelectionRequest,
 } from "../../shared/hierarchy/types";
 import type { PlaneSketch } from "../../shared/sketch/types";
+import { exportObjectToStl } from "../../utils/exportSTL";
 
 // ============================================
 // APP
@@ -113,6 +118,9 @@ function CadWorkspace({
   const workPlaneIdCounterRef = useRef(1);
   const dimensionIdCounterRef = useRef(1);
   const historyEntryIdCounterRef = useRef(1);
+  const sketchCircleIdCounterRef = useRef(1);
+  const solidBodyIdCounterRef = useRef(1);
+  const exportRootRef = useRef<THREE.Group | null>(null);
 
   // --------------------------------------------
   // UI State
@@ -151,6 +159,7 @@ function CadWorkspace({
     useState<EditingTransformField>(null);
   const [transformFieldDraft, setTransformFieldDraft] = useState("");
   const [historyCollapsed, setHistoryCollapsed] = useState(true);
+  const [toolsCollapsed, setToolsCollapsed] = useState(true);
   const [clipboardObject, setClipboardObject] =
     useState<ClipboardSceneObject>(null);
   const [dimensionOverlayItems, setDimensionOverlayItems] = useState<
@@ -162,16 +171,29 @@ function CadWorkspace({
   // --------------------------------------------
 
   const [workPlanes, setWorkPlanes] = useState<WorkPlane[]>([]);
+  const [sketchCircles, setSketchCircles] = useState<SketchCircle[]>([]);
+  const [solidBodies, setSolidBodies] = useState<SolidBody[]>([]);
   const [dimensions, setDimensions] = useState<DistanceDimension[]>([]);
   const [selectedObject, setSelectedObject] = useState<SceneSelection>(null);
   const [secondarySelection, setSecondarySelection] =
     useState<SceneSelection>(null);
+  const [circlePreview, setCirclePreview] = useState<{
+    planeId: string;
+    planePosition: Vector3Tuple;
+    planeRotation: Vector3Tuple;
+    planeScale: Vector3Tuple;
+    center: [number, number];
+    radius: number;
+    dragging: boolean;
+  } | null>(null);
   const [historyEntries, setHistoryEntries] = useState<SceneHistoryEntry[]>([
     {
       id: "history-0",
       label: "Initial",
       snapshot: cloneSceneSnapshot({
         workPlanes: [],
+        sketchCircles: [],
+        solidBodies: [],
         dimensions: [],
         primarySelection: null,
         secondarySelection: null,
@@ -179,6 +201,23 @@ function CadWorkspace({
     },
   ]);
   const [historyIndex, setHistoryIndex] = useState(0);
+  const [sketchModeActive, setSketchModeActive] = useState(false);
+  const [activeSketchTool, setActiveSketchTool] = useState<SketchTool>(null);
+  const [selectedSketchCircleId, setSelectedSketchCircleId] = useState<string | null>(null);
+  const [selectedSolidBodyId, setSelectedSolidBodyId] = useState<string | null>(null);
+  const [circleRadiusDraft, setCircleRadiusDraft] = useState("12");
+  const [circleDiameterDraft, setCircleDiameterDraft] = useState("24");
+  const [extrudeDepthDraft, setExtrudeDepthDraft] = useState("20");
+  const [extrudePreview, setExtrudePreview] = useState<{
+    sourceSketchId: string;
+    planePosition: Vector3Tuple;
+    planeRotation: Vector3Tuple;
+    planeScale: Vector3Tuple;
+    center: [number, number];
+    radius: number;
+    depth: number;
+    direction: 1 | -1;
+  } | null>(null);
 
   // --------------------------------------------
   // Snapshot / History Helpers
@@ -188,16 +227,20 @@ function CadWorkspace({
     (): SceneSnapshot =>
       cloneSceneSnapshot({
         workPlanes: workPlanesRef.current,
+        sketchCircles,
+        solidBodies,
         dimensions: dimensionsRef.current,
         primarySelection: primarySelectionRef.current,
         secondarySelection: secondarySelectionRef.current,
       }),
-    []
+    [sketchCircles, solidBodies]
   );
 
   const applySceneSnapshot = useCallback((snapshot: SceneSnapshot) => {
     const nextSnapshot = cloneSceneSnapshot(snapshot);
     setWorkPlanes(nextSnapshot.workPlanes);
+    setSketchCircles(nextSnapshot.sketchCircles);
+    setSolidBodies(nextSnapshot.solidBodies);
     setDimensions(nextSnapshot.dimensions);
     setSelectedObject(nextSnapshot.primarySelection);
     setSecondarySelection(nextSnapshot.secondarySelection);
@@ -240,6 +283,18 @@ function CadWorkspace({
   const nextDimensionId = useCallback(() => {
     const nextId = `dimension-${dimensionIdCounterRef.current}`;
     dimensionIdCounterRef.current += 1;
+    return nextId;
+  }, []);
+
+  const nextSketchCircleId = useCallback(() => {
+    const nextId = `sketch-circle-${sketchCircleIdCounterRef.current}`;
+    sketchCircleIdCounterRef.current += 1;
+    return nextId;
+  }, []);
+
+  const nextSolidBodyId = useCallback(() => {
+    const nextId = `solid-body-${solidBodyIdCounterRef.current}`;
+    solidBodyIdCounterRef.current += 1;
     return nextId;
   }, []);
 
@@ -346,6 +401,15 @@ function CadWorkspace({
           workPlanes: snapshot.workPlanes.filter(
             (plane) => plane.id !== selection.objectId
           ),
+          sketchCircles: snapshot.sketchCircles.filter(
+            (circle) => circle.planeId !== selection.objectId
+          ),
+          solidBodies: snapshot.solidBodies.filter((body) => {
+            const sourceSketch = snapshot.sketchCircles.find(
+              (circle) => circle.id === body.sourceSketchId
+            );
+            return sourceSketch?.planeId !== selection.objectId;
+          }),
           dimensions: snapshot.dimensions.filter(
             (dimension) =>
               dimension.from.objectId !== selection.objectId &&
@@ -583,6 +647,250 @@ function CadWorkspace({
     [commitSceneMutation]
   );
 
+  const selectedPlane = useMemo(() => {
+    if (!selectedObject || selectedObject.objectKind !== "plane") return null;
+    return workPlanes.find((plane) => plane.id === selectedObject.objectId) ?? null;
+  }, [selectedObject, workPlanes]);
+
+  const activeSketchPlane = useMemo(() => {
+    if (!selectedPlane) return null;
+    return {
+      id: selectedPlane.id,
+      position: selectedPlane.position,
+      rotation: selectedPlane.rotation,
+      scale: selectedPlane.scale,
+    };
+  }, [selectedPlane]);
+
+  const selectedSketchCircle = useMemo(
+    () => sketchCircles.find((circle) => circle.id === selectedSketchCircleId) ?? null,
+    [selectedSketchCircleId, sketchCircles]
+  );
+  const selectedSolidBody = useMemo(
+    () => solidBodies.find((body) => body.id === selectedSolidBodyId) ?? null,
+    [selectedSolidBodyId, solidBodies]
+  );
+
+  const canExportStl = solidBodies.length > 0;
+  const extrudeModeActive = extrudePreview !== null;
+  const parsePositiveNumber = useCallback((value: string) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return parsed;
+  }, []);
+
+  const applyCircleRadiusDraft = useCallback((nextRadiusText: string) => {
+    setCircleRadiusDraft(nextRadiusText);
+    const nextRadius = parsePositiveNumber(nextRadiusText);
+    if (nextRadius !== null) {
+      setCircleDiameterDraft((nextRadius * 2).toFixed(2));
+      if (selectedSketchCircleId) {
+        setSketchCircles((existingCircles) =>
+          existingCircles.map((circle) =>
+            circle.id === selectedSketchCircleId
+              ? { ...circle, radius: nextRadius }
+              : circle
+          )
+        );
+        setExtrudePreview((current) =>
+          current && current.sourceSketchId === selectedSketchCircleId
+            ? { ...current, radius: nextRadius }
+            : current
+        );
+      }
+    }
+  }, [parsePositiveNumber, selectedSketchCircleId]);
+
+  const applyCircleDiameterDraft = useCallback((nextDiameterText: string) => {
+    setCircleDiameterDraft(nextDiameterText);
+    const nextDiameter = parsePositiveNumber(nextDiameterText);
+    if (nextDiameter !== null) {
+      const nextRadius = nextDiameter / 2;
+      setCircleRadiusDraft(nextRadius.toFixed(2));
+      if (selectedSketchCircleId) {
+        setSketchCircles((existingCircles) =>
+          existingCircles.map((circle) =>
+            circle.id === selectedSketchCircleId
+              ? { ...circle, radius: nextRadius }
+              : circle
+          )
+        );
+        setExtrudePreview((current) =>
+          current && current.sourceSketchId === selectedSketchCircleId
+            ? { ...current, radius: nextRadius }
+            : current
+        );
+      }
+    }
+  }, [parsePositiveNumber, selectedSketchCircleId]);
+
+  const createCircleSketch = useCallback(
+    (
+      center: [number, number],
+      radius: number,
+      plane: {
+        id: string;
+        position: Vector3Tuple;
+        rotation: Vector3Tuple;
+        scale: Vector3Tuple;
+      },
+      label = "Create Circle Sketch"
+    ) => {
+      commitSceneMutation(label, (snapshot) => {
+        const nextCircle: SketchCircle = {
+          id: nextSketchCircleId(),
+          name: `Circle ${snapshot.sketchCircles.length + 1}`,
+          planeId: plane.id,
+          center,
+          radius,
+          planePosition: [...plane.position] as Vector3Tuple,
+          planeRotation: [...plane.rotation] as Vector3Tuple,
+          planeScale: [...plane.scale] as Vector3Tuple,
+        };
+
+        return {
+          ...snapshot,
+          sketchCircles: [...snapshot.sketchCircles, nextCircle],
+        };
+      });
+    },
+    [commitSceneMutation, nextSketchCircleId]
+  );
+
+  const handleStartCircleFromClick = useCallback(() => {
+    if (!activeSketchPlane) {
+      setViewportWarning("Select a work plane to sketch");
+      return;
+    }
+
+    setSketchModeActive(true);
+    setActiveSketchTool("circle");
+    setCirclePreview(null);
+  }, [activeSketchPlane]);
+
+  const handleFinalizeCirclePreview = useCallback(() => {
+    if (!circlePreview || !activeSketchPlane) return;
+    if (circlePreview.radius <= 0) return;
+
+    createCircleSketch(
+      [0, 0],
+      circlePreview.radius,
+      {
+        id: activeSketchPlane.id,
+        position: activeSketchPlane.position,
+        rotation: activeSketchPlane.rotation,
+        scale: activeSketchPlane.scale,
+      },
+      "Create Circle Sketch"
+    );
+    setSelectedSketchCircleId(`sketch-circle-${sketchCircleIdCounterRef.current - 1}`);
+    setCirclePreview(null);
+    setActiveSketchTool(null);
+  }, [activeSketchPlane, circlePreview, createCircleSketch]);
+
+  const handleExtrudeSelectedSketch = useCallback(() => {
+    if (!selectedSketchCircle) {
+      setViewportWarning("Select a circle sketch to extrude");
+      return;
+    }
+
+    const depthValue = Number(extrudeDepthDraft);
+    if (!Number.isFinite(depthValue) || depthValue <= 0) {
+      setViewportWarning("Enter a valid extrusion depth");
+      return;
+    }
+
+    setExtrudePreview({
+      sourceSketchId: selectedSketchCircle.id,
+      planePosition: [...selectedSketchCircle.planePosition] as Vector3Tuple,
+      planeRotation: [...selectedSketchCircle.planeRotation] as Vector3Tuple,
+      planeScale: [...selectedSketchCircle.planeScale] as Vector3Tuple,
+      center: [...selectedSketchCircle.center] as [number, number],
+      radius: selectedSketchCircle.radius,
+      depth: Math.max(0.1, depthValue),
+      direction: 1,
+    });
+    setSelectedSolidBodyId(null);
+  }, [extrudeDepthDraft, selectedSketchCircle]);
+
+  const handleExtrudePreviewDepthChange = useCallback((signedDepth: number) => {
+    setExtrudePreview((current) => {
+      if (!current) return current;
+      const direction: 1 | -1 = signedDepth >= 0 ? 1 : -1;
+      const depth = Math.max(0.1, Math.abs(signedDepth));
+      setExtrudeDepthDraft(depth.toFixed(2));
+      return { ...current, depth, direction };
+    });
+  }, []);
+
+  const applyExtrudeDepthDraft = useCallback(
+    (nextDepthText: string) => {
+      setExtrudeDepthDraft(nextDepthText);
+      const nextDepth = parsePositiveNumber(nextDepthText);
+      if (nextDepth === null) return;
+
+      setExtrudePreview((current) =>
+        current ? { ...current, depth: Math.max(0.1, nextDepth) } : current
+      );
+
+      if (selectedSolidBodyId) {
+        setSolidBodies((existingBodies) =>
+          existingBodies.map((body) =>
+            body.id === selectedSolidBodyId
+              ? { ...body, depth: Math.max(0.1, nextDepth) }
+              : body
+          )
+        );
+      }
+    },
+    [parsePositiveNumber, selectedSolidBodyId]
+  );
+
+  const handleCancelExtrudePreview = useCallback(() => {
+    setExtrudePreview(null);
+  }, []);
+
+  const handleConfirmExtrudePreview = useCallback(() => {
+    if (!extrudePreview) return;
+
+    const preview = extrudePreview;
+
+    commitSceneMutation("Extrude Sketch", (snapshot) => {
+      const sourceCircle = snapshot.sketchCircles.find(
+        (circle) => circle.id === preview.sourceSketchId
+      );
+
+      if (!sourceCircle) return snapshot;
+
+      const nextBody: SolidBody = {
+        id: nextSolidBodyId(),
+        name: `Body ${snapshot.solidBodies.length + 1}`,
+        sourceSketchId: sourceCircle.id,
+        radius: sourceCircle.radius,
+        depth: preview.depth,
+        direction: preview.direction,
+        center: [...sourceCircle.center] as [number, number],
+        planePosition: [...sourceCircle.planePosition] as Vector3Tuple,
+        planeRotation: [...sourceCircle.planeRotation] as Vector3Tuple,
+        planeScale: [...sourceCircle.planeScale] as Vector3Tuple,
+      };
+
+      return {
+        ...snapshot,
+        solidBodies: [...snapshot.solidBodies, nextBody],
+      };
+    });
+
+    setExtrudeDepthDraft(preview.depth.toFixed(2));
+    setExtrudePreview(null);
+    setSelectedSolidBodyId(`solid-body-${solidBodyIdCounterRef.current - 1}`);
+  }, [commitSceneMutation, extrudePreview, nextSolidBodyId]);
+
+  const handleExportStl = useCallback(() => {
+    if (!exportRootRef.current) return;
+    exportObjectToStl(exportRootRef.current, "design-export.stl");
+  }, []);
+
   // --------------------------------------------
   // History Navigation
   // --------------------------------------------
@@ -604,11 +912,6 @@ function CadWorkspace({
   // --------------------------------------------
   // Derived Data
   // --------------------------------------------
-
-  const selectedPlane = useMemo(() => {
-    if (!selectedObject || selectedObject.objectKind !== "plane") return null;
-    return workPlanes.find((plane) => plane.id === selectedObject.objectId) ?? null;
-  }, [selectedObject, workPlanes]);
 
   const transformTarget = useMemo<TransformTarget | null>(() => {
     if (!selectedPlane) return null;
@@ -678,6 +981,39 @@ function CadWorkspace({
   useEffect(() => {
     secondarySelectionRef.current = secondarySelection;
   }, [secondarySelection]);
+
+  useEffect(() => {
+    if (activeSketchPlane) return;
+    setSketchModeActive(false);
+    setActiveSketchTool(null);
+    setCirclePreview(null);
+  }, [activeSketchPlane]);
+
+  useEffect(() => {
+    if (!selectedSketchCircle) return;
+    setCircleRadiusDraft(selectedSketchCircle.radius.toFixed(2));
+    setCircleDiameterDraft((selectedSketchCircle.radius * 2).toFixed(2));
+  }, [selectedSketchCircle]);
+
+  useEffect(() => {
+    if (extrudePreview) {
+      setExtrudeDepthDraft(extrudePreview.depth.toFixed(2));
+      return;
+    }
+    if (selectedSolidBody) {
+      setExtrudeDepthDraft(selectedSolidBody.depth.toFixed(2));
+    }
+  }, [extrudePreview, selectedSolidBody]);
+
+  useEffect(() => {
+    if (!extrudePreview) return;
+    const sourceExists = sketchCircles.some(
+      (circle) => circle.id === extrudePreview.sourceSketchId
+    );
+    if (!sourceExists) {
+      setExtrudePreview(null);
+    }
+  }, [extrudePreview, sketchCircles]);
 
   // --------------------------------------------
   // Transform Drag
@@ -844,6 +1180,9 @@ function CadWorkspace({
         if (!additive) {
           setSelectedObject(null);
           setSecondarySelection(null);
+          setSelectedSketchCircleId(null);
+          setSelectedSolidBodyId(null);
+          setExtrudePreview(null);
         }
         return;
       }
@@ -858,6 +1197,9 @@ function CadWorkspace({
 
       const isSameAsPrimary = areSelectionsEqual(selection, selectedObject);
       setSelectedObject(selection);
+      setSelectedSketchCircleId(null);
+      setSelectedSolidBodyId(null);
+      setExtrudePreview(null);
       if (!isSameAsPrimary) {
         setSecondarySelection(null);
       }
@@ -888,6 +1230,49 @@ function CadWorkspace({
     [getCurrentSceneSnapshot, selectedObject, transformMode, transformTarget]
   );
 
+  const handleSketchPlanePointerDown = useCallback(
+    (localPoint: [number, number], planeState: {
+      id: string;
+      position: Vector3Tuple;
+      rotation: Vector3Tuple;
+      scale: Vector3Tuple;
+    }) => {
+      if (!sketchModeActive || activeSketchTool !== "circle" || !activeSketchPlane) {
+        return;
+      }
+      if (planeState.id !== activeSketchPlane.id) return;
+
+      const initialRadius = Math.max(0.1, Math.hypot(localPoint[0], localPoint[1]));
+
+      setCirclePreview({
+        planeId: planeState.id,
+        planePosition: [...planeState.position] as Vector3Tuple,
+        planeRotation: [...planeState.rotation] as Vector3Tuple,
+        planeScale: [...planeState.scale] as Vector3Tuple,
+        center: [0, 0],
+        radius: initialRadius,
+        dragging: true,
+      });
+    },
+    [activeSketchPlane, activeSketchTool, sketchModeActive]
+  );
+
+  const handleSketchPlanePointerMove = useCallback((localPoint: [number, number]) => {
+    setCirclePreview((current) => {
+      if (!current || !current.dragging) return current;
+      const radius = Math.max(0.1, Math.hypot(localPoint[0], localPoint[1]));
+      return { ...current, radius };
+    });
+  }, []);
+
+  const handleSketchPlanePointerUp = useCallback(() => {
+    setCirclePreview((current) => {
+      if (!current || !current.dragging) return current;
+      return { ...current, dragging: false };
+    });
+    handleFinalizeCirclePreview();
+  }, [handleFinalizeCirclePreview]);
+
   // --------------------------------------------
   // Render
   // --------------------------------------------
@@ -904,10 +1289,42 @@ function CadWorkspace({
             cameraStateRef={cameraStateRef}
             workPlanes={workPlanes}
             planeSketches={planeSketches}
+            sketchCircles={sketchCircles}
+            sketchCirclePreview={circlePreview}
+            extrudePreview={extrudePreview}
+            solidBodies={solidBodies}
+            selectedSketchCircleId={selectedSketchCircleId}
+            selectedSolidBodyId={selectedSolidBodyId}
+            sketchModeActive={sketchModeActive}
+            activeSketchPlane={activeSketchPlane}
             dimensions={dimensions}
             primarySelection={selectedObject}
             secondarySelection={secondarySelection}
             onSelectObject={handleSceneSelection}
+            onSelectSketchCircle={(id) => {
+              setSelectedSketchCircleId(id);
+              if (id) {
+                setSelectedSolidBodyId(null);
+                setSelectedObject(null);
+                setSecondarySelection(null);
+              }
+              setExtrudePreview(null);
+            }}
+            onSelectSolidBody={(id) => {
+              setSelectedSolidBodyId(id);
+              if (id) {
+                setSelectedSketchCircleId(null);
+                setSelectedObject(null);
+                setSecondarySelection(null);
+              }
+              setExtrudePreview(null);
+            }}
+            onSketchPlanePointerDown={handleSketchPlanePointerDown}
+            onSketchPlanePointerMove={handleSketchPlanePointerMove}
+            onSketchPlanePointerUp={handleSketchPlanePointerUp}
+            onExtrudePreviewDepthChange={handleExtrudePreviewDepthChange}
+            onConfirmExtrudePreview={handleConfirmExtrudePreview}
+            onCancelExtrudePreview={handleCancelExtrudePreview}
             onDimensionOverlayChange={setDimensionOverlayItems}
             transformMode={transformMode}
             transformTarget={transformTarget}
@@ -915,6 +1332,7 @@ function CadWorkspace({
             transformDragState={transformDragState}
             onHoverTransformAxis={setHoveredTransformAxis}
             onTransformAxisPointerDown={handleTransformAxisPointerDown}
+            exportRootRef={exportRootRef}
           />
 
           <DimensionOverlay
@@ -1075,6 +1493,41 @@ function CadWorkspace({
       />
 
       {pieOpen && <CameraPieMenu center={pieCenter} selectedAction={selectedAction} />}
+      <ToolsWindow
+        collapsed={toolsCollapsed}
+        onToggleCollapsed={() => setToolsCollapsed((current) => !current)}
+        sketchModeActive={sketchModeActive}
+        onSetSketchModeActive={(active) => {
+          if (active && !activeSketchPlane) {
+            setViewportWarning("Select a work plane to sketch");
+            return;
+          }
+          setSketchModeActive(active);
+          if (!active) {
+            setActiveSketchTool(null);
+            setCirclePreview(null);
+          }
+        }}
+        activeSketchPlaneName={selectedPlane?.name ?? "No Plane Selected"}
+        canSketch={!!activeSketchPlane}
+        activeSketchTool={activeSketchTool}
+        onActivateCircleTool={handleStartCircleFromClick}
+        radiusDraft={circleRadiusDraft}
+        diameterDraft={circleDiameterDraft}
+        onRadiusDraftChange={applyCircleRadiusDraft}
+        onDiameterDraftChange={applyCircleDiameterDraft}
+        selectedSketchCircleName={selectedSketchCircle?.name ?? null}
+        extrudeDepthDraft={extrudeDepthDraft}
+        onExtrudeDepthDraftChange={applyExtrudeDepthDraft}
+        onExtrude={handleExtrudeSelectedSketch}
+        canExtrude={!!selectedSketchCircle}
+        extrudeModeActive={extrudeModeActive}
+        liveExtrudeDepth={extrudePreview?.depth ?? null}
+        onConfirmExtrude={handleConfirmExtrudePreview}
+        onCancelExtrude={handleCancelExtrudePreview}
+        onExportStl={handleExportStl}
+        canExportStl={canExportStl}
+      />
       {toolsPieOpen && (
         <ToolsPieMenu center={toolsPieCenter} selectedAction={selectedToolAction} />
       )}

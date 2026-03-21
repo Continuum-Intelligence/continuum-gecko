@@ -1,7 +1,9 @@
 import type {
   DistanceDimension,
+  SketchCircle,
   SceneSelection,
   SceneSnapshot,
+  SolidBody,
   WorkPlane,
 } from "../types";
 
@@ -33,9 +35,31 @@ export function cloneWorkPlane(plane: WorkPlane): WorkPlane {
   };
 }
 
+export function cloneSketchCircle(circle: SketchCircle): SketchCircle {
+  return {
+    ...circle,
+    center: [...circle.center],
+    planePosition: [...circle.planePosition],
+    planeRotation: [...circle.planeRotation],
+    planeScale: [...circle.planeScale],
+  };
+}
+
+export function cloneSolidBody(body: SolidBody): SolidBody {
+  return {
+    ...body,
+    center: [...body.center],
+    planePosition: [...body.planePosition],
+    planeRotation: [...body.planeRotation],
+    planeScale: [...body.planeScale],
+  };
+}
+
 export function cloneSceneSnapshot(snapshot: SceneSnapshot): SceneSnapshot {
   return {
     workPlanes: snapshot.workPlanes.map(cloneWorkPlane),
+    sketchCircles: snapshot.sketchCircles.map(cloneSketchCircle),
+    solidBodies: snapshot.solidBodies.map(cloneSolidBody),
     dimensions: snapshot.dimensions.map(cloneDistanceDimension),
     primarySelection: cloneSelection(snapshot.primarySelection),
     secondarySelection: cloneSelection(snapshot.secondarySelection),

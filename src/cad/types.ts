@@ -7,6 +7,7 @@ export type PieAction = "origin" | "top" | "front" | "right" | "iso";
 export type ViewAction = PieAction | "back" | "left" | "bottom";
 
 export type ToolPieAction = "none" | "createWorkPlane";
+export type SketchTool = "circle" | null;
 
 export type TransformMode = "move" | "rotate" | "scale" | null;
 
@@ -45,6 +46,30 @@ export type WorkPlane = {
   };
 };
 
+export type SketchCircle = {
+  id: string;
+  name: string;
+  planeId: string;
+  center: [number, number];
+  radius: number;
+  planePosition: Vector3Tuple;
+  planeRotation: Vector3Tuple;
+  planeScale: Vector3Tuple;
+};
+
+export type SolidBody = {
+  id: string;
+  name: string;
+  sourceSketchId: string;
+  radius: number;
+  depth: number;
+  direction: 1 | -1;
+  center: [number, number];
+  planePosition: Vector3Tuple;
+  planeRotation: Vector3Tuple;
+  planeScale: Vector3Tuple;
+};
+
 export type SceneSelection = {
   objectKind: SelectableObjectKind;
   objectId: string;
@@ -62,6 +87,8 @@ export type DistanceDimension = {
 
 export type SceneSnapshot = {
   workPlanes: WorkPlane[];
+  sketchCircles: SketchCircle[];
+  solidBodies: SolidBody[];
   dimensions: DistanceDimension[];
   primarySelection: SceneSelection;
   secondarySelection: SceneSelection;
