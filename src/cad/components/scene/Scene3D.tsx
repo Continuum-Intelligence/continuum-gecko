@@ -26,9 +26,11 @@ import {
 } from "../../helpers/sceneMath";
 import type {
   CameraState,
+  BodyFaceId,
   DimensionOverlayItem,
   DistanceDimension,
   SketchCircle,
+  SketchRectangle,
   SceneSelection,
   SolidBody,
   TransformAxis,
@@ -43,6 +45,7 @@ import type {
 } from "../../types";
 import { PlaneSketches } from "./PlaneSketches";
 import { EXPORTABLE_GEOMETRY_FLAG } from "../../../utils/exportSTL";
+import { meshDataToGeometry } from "../../utils/booleanCSG";
 
 // ============================================
 // CAMERA SYSTEM
@@ -123,76 +126,51 @@ function CameraAnimator({
 // ============================================
 
 function BaseGrid() {
-  const extent = 250;
-  const minorStep = 1;
-  const majorStep = 10;
-  const { minorPositions, majorPositions } = useMemo(() => {
-    const minor: number[] = [];
-    const major: number[] = [];
+  const majorGrid = useMemo(
+    () => new THREE.GridHelper(500, 50, "#9aa3af", "#9aa3af"),
+    []
+  );
+  const minorGrid = useMemo(
+    () => new THREE.GridHelper(500, 500, "#e4e7eb", "#e4e7eb"),
+    []
+  );
 
-    for (let i = -extent; i <= extent; i += minorStep) {
-      if (i % majorStep === 0) {
-        major.push(i);
-      } else {
-        minor.push(i);
-      }
-    }
-
-    return {
-      minorPositions: minor,
-      majorPositions: major,
+  useEffect(() => {
+    const configureGrid = (grid: THREE.GridHelper, opacity: number, zOffset: number) => {
+      grid.rotation.x = Math.PI / 2;
+      grid.position.z = zOffset;
+      grid.renderOrder = 0;
+      const material = Array.isArray(grid.material) ? grid.material : [grid.material];
+      material.forEach((mat) => {
+        mat.transparent = true;
+        mat.opacity = opacity;
+        mat.depthWrite = false;
+      });
     };
-  }, []);
+    configureGrid(minorGrid, 0.22, -0.006);
+    configureGrid(majorGrid, 0.42, -0.004);
+  }, [majorGrid, minorGrid]);
+
+  useEffect(
+    () => () => {
+      majorGrid.geometry.dispose();
+      (Array.isArray(majorGrid.material)
+        ? majorGrid.material
+        : [majorGrid.material]
+      ).forEach((mat) => mat.dispose());
+      minorGrid.geometry.dispose();
+      (Array.isArray(minorGrid.material)
+        ? minorGrid.material
+        : [minorGrid.material]
+      ).forEach((mat) => mat.dispose());
+    },
+    [majorGrid, minorGrid]
+  );
 
   return (
     <group>
-      {minorPositions.map((i) => (
-        <group key={`minor-${i}`}>
-          <line {...nonSelectableProps}>
-            <bufferGeometry>
-              <bufferAttribute
-                attach="attributes-position"
-                args={[new Float32Array([-extent, i, 0, extent, i, 0]), 3]}
-              />
-            </bufferGeometry>
-            <lineBasicMaterial color="#e4e7eb" />
-          </line>
-
-          <line {...nonSelectableProps}>
-            <bufferGeometry>
-              <bufferAttribute
-                attach="attributes-position"
-                args={[new Float32Array([i, -extent, 0, i, extent, 0]), 3]}
-              />
-            </bufferGeometry>
-            <lineBasicMaterial color="#e4e7eb" />
-          </line>
-        </group>
-      ))}
-
-      {majorPositions.map((i) => (
-        <group key={`major-${i}`}>
-          <line {...nonSelectableProps}>
-            <bufferGeometry>
-              <bufferAttribute
-                attach="attributes-position"
-                args={[new Float32Array([-extent, i, 0, extent, i, 0]), 3]}
-              />
-            </bufferGeometry>
-            <lineBasicMaterial color="#9aa3af" />
-          </line>
-
-          <line {...nonSelectableProps}>
-            <bufferGeometry>
-              <bufferAttribute
-                attach="attributes-position"
-                args={[new Float32Array([i, -extent, 0, i, extent, 0]), 3]}
-              />
-            </bufferGeometry>
-            <lineBasicMaterial color="#9aa3af" />
-          </line>
-        </group>
-      ))}
+      <primitive object={minorGrid} {...nonSelectableProps} />
+      <primitive object={majorGrid} {...nonSelectableProps} />
     </group>
   );
 }
@@ -209,7 +187,7 @@ function Axes() {
             args={[new Float32Array([-extent, 0, 0, extent, 0, 0]), 3]}
           />
         </bufferGeometry>
-        <lineBasicMaterial color="#ff4d4f" />
+        <lineBasicMaterial color="#ff4d4f" transparent opacity={0.72} />
       </line>
 
       <line {...nonSelectableProps}>
@@ -219,7 +197,7 @@ function Axes() {
             args={[new Float32Array([0, -extent, 0, 0, extent, 0]), 3]}
           />
         </bufferGeometry>
-        <lineBasicMaterial color="#22c55e" />
+        <lineBasicMaterial color="#22c55e" transparent opacity={0.72} />
       </line>
 
       <line {...nonSelectableProps}>
@@ -229,7 +207,7 @@ function Axes() {
             args={[new Float32Array([0, 0, -extent, 0, 0, extent]), 3]}
           />
         </bufferGeometry>
-        <lineBasicMaterial color="#3b82f6" />
+        <lineBasicMaterial color="#3b82f6" transparent opacity={0.72} />
       </line>
     </group>
   );
@@ -252,11 +230,13 @@ const WorkPlaneMesh = memo(function WorkPlaneMesh({
   plane,
   primarySelection,
   secondarySelection,
+  activePlaneId,
   onSelect,
 }: {
   plane: WorkPlane;
   primarySelection: SceneSelection;
   secondarySelection: SceneSelection;
+  activePlaneId: string | null;
   onSelect: (selection: SceneSelection, additive: boolean) => void;
 }) {
   const planeGeometry = useMemo(
@@ -286,6 +266,21 @@ const WorkPlaneMesh = memo(function WorkPlaneMesh({
     role ? "#050505" : "#0f172a";
   const getFaceColor = (role: "primary" | "secondary" | null) =>
     role ? "#050505" : "#7dd3fc";
+  const isActive = activePlaneId === plane.id;
+  const faceOpacity = highlight.faceRole ? 0.4 : isActive ? 0.12 : 0.015;
+  const faceColor = highlight.faceRole
+    ? getFaceColor(highlight.faceRole)
+    : isActive
+      ? "#8ccbe6"
+      : "#aab4c2";
+  const outlineOpacity = highlight.faceRole ? 1 : isActive ? 0.86 : 0.26;
+  const outlineColor = highlight.faceRole
+    ? getRoleColor(highlight.faceRole)
+    : isActive
+      ? "#51667f"
+      : "#8894a3";
+  const planeSurfaceZ = isActive ? 0.02 : 0.01;
+  const outlineZ = isActive ? 0.03 : 0.018;
 
   const renderEdgeHitTarget = (edgeId: WorkPlaneEdgeId) => {
     const halfWidth = plane.size.width / 2;
@@ -345,6 +340,7 @@ const WorkPlaneMesh = memo(function WorkPlaneMesh({
   return (
     <group position={plane.position} rotation={plane.rotation} scale={plane.scale}>
       <mesh
+        position={[0, 0, planeSurfaceZ]}
         renderOrder={1}
         onClick={(event) => {
           event.stopPropagation();
@@ -356,23 +352,23 @@ const WorkPlaneMesh = memo(function WorkPlaneMesh({
       >
         <primitive object={planeGeometry} attach="geometry" />
         <meshBasicMaterial
-          color={highlight.faceRole ? getFaceColor(highlight.faceRole) : "#7dd3fc"}
+          color={faceColor}
           transparent
-          opacity={highlight.faceRole ? 0.44 : 0.16}
+          opacity={faceOpacity}
           side={THREE.DoubleSide}
           depthWrite={false}
           polygonOffset
-          polygonOffsetFactor={-2}
-          polygonOffsetUnits={-2}
+          polygonOffsetFactor={-4}
+          polygonOffsetUnits={-4}
         />
       </mesh>
 
-      <lineSegments position={[0, 0, 0.02]} renderOrder={2}>
+      <lineSegments position={[0, 0, outlineZ]} renderOrder={2}>
         <primitive object={outlineGeometry} attach="geometry" />
         <lineBasicMaterial
-          color={highlight.faceRole ? getRoleColor(highlight.faceRole) : "#7c8b9e"}
+          color={outlineColor}
           transparent
-          opacity={highlight.faceRole ? 1 : 0.68}
+          opacity={outlineOpacity}
         />
       </lineSegments>
 
@@ -439,11 +435,13 @@ const WorkPlanes = memo(function WorkPlanes({
   workPlanes,
   primarySelection,
   secondarySelection,
+  activePlaneId,
   onSelect,
 }: {
   workPlanes: WorkPlane[];
   primarySelection: SceneSelection;
   secondarySelection: SceneSelection;
+  activePlaneId: string | null;
   onSelect: (selection: SceneSelection, additive: boolean) => void;
 }) {
   return (
@@ -456,6 +454,7 @@ const WorkPlanes = memo(function WorkPlanes({
             plane={plane}
             primarySelection={primarySelection}
             secondarySelection={secondarySelection}
+            activePlaneId={activePlaneId}
             onSelect={onSelect}
           />
         ))}
@@ -496,94 +495,268 @@ const CircleCurve = memo(function CircleCurve({
   );
 });
 
+const SketchCircleItem = memo(function SketchCircleItem({
+  circle,
+  selected,
+  extrudeModeArmed,
+  onSelectSketchCircle,
+}: {
+  circle: SketchCircle;
+  selected: boolean;
+  extrudeModeArmed: boolean;
+  onSelectSketchCircle: (id: string | null) => void;
+}) {
+  const accentRingGeometry = useMemo(
+    () =>
+      new THREE.RingGeometry(
+        Math.max(0.1, circle.radius - 0.18),
+        circle.radius + 0.18,
+        64
+      ),
+    [circle.radius]
+  );
+  const fillGeometry = useMemo(
+    () => new THREE.CircleGeometry(Math.max(0.2, circle.radius), 64),
+    [circle.radius]
+  );
+  const pickRingGeometry = useMemo(
+    () =>
+      new THREE.RingGeometry(
+        Math.max(0.1, circle.radius - 1.2),
+        circle.radius + 1.2,
+        48
+      ),
+    [circle.radius]
+  );
+
+  useEffect(
+    () => () => {
+      accentRingGeometry.dispose();
+      fillGeometry.dispose();
+      pickRingGeometry.dispose();
+    },
+    [accentRingGeometry, fillGeometry, pickRingGeometry]
+  );
+
+  return (
+    <group
+      position={circle.planePosition}
+      rotation={circle.planeRotation}
+      scale={circle.planeScale}
+    >
+      <group position={[circle.center[0], circle.center[1], 0]}>
+        <CircleCurve
+          radius={circle.radius}
+          color={selected ? "#0f172a" : "#1f2937"}
+          opacity={selected ? 1 : 0.92}
+          zOffset={0.085}
+        />
+        <mesh position={[0, 0, 0.07]} {...nonSelectableProps}>
+          <sphereGeometry args={[0.42, 16, 16]} />
+          <meshBasicMaterial
+            color={selected ? "#0f172a" : "#334155"}
+            transparent
+            opacity={0.9}
+            depthWrite={false}
+          />
+        </mesh>
+        <mesh geometry={accentRingGeometry} {...nonSelectableProps}>
+          <meshBasicMaterial
+            transparent
+            opacity={selected ? 0.6 : 0.34}
+            color={selected ? "#111827" : "#334155"}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+          />
+        </mesh>
+        <mesh
+          geometry={fillGeometry}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelectSketchCircle(circle.id);
+          }}
+        >
+          <meshBasicMaterial
+            transparent
+            opacity={selected ? 0.12 : extrudeModeArmed ? 0.08 : 0.04}
+            color={selected ? "#0f172a" : extrudeModeArmed ? "#64748b" : "#334155"}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+          />
+        </mesh>
+        <mesh
+          geometry={pickRingGeometry}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelectSketchCircle(circle.id);
+          }}
+        >
+          <meshBasicMaterial
+            transparent
+            opacity={selected ? 0.16 : 0.06}
+            color={selected ? "#e2e8f0" : "#cbd5e1"}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+          />
+        </mesh>
+      </group>
+    </group>
+  );
+});
+
 const SketchCircles = memo(function SketchCircles({
   circles,
   selectedSketchCircleId,
+  extrudeModeArmed,
   onSelectSketchCircle,
 }: {
   circles: SketchCircle[];
   selectedSketchCircleId: string | null;
+  extrudeModeArmed: boolean;
   onSelectSketchCircle: (id: string | null) => void;
 }) {
   return (
     <>
       {circles.map((circle) => (
-        <group
+        <SketchCircleItem
           key={circle.id}
-          position={circle.planePosition}
-          rotation={circle.planeRotation}
-          scale={circle.planeScale}
+          circle={circle}
+          selected={selectedSketchCircleId === circle.id}
+          extrudeModeArmed={extrudeModeArmed}
+          onSelectSketchCircle={onSelectSketchCircle}
+        />
+      ))}
+    </>
+  );
+});
+
+const RectangleCurve = memo(function RectangleCurve({
+  width,
+  height,
+  color,
+  opacity,
+  zOffset,
+}: {
+  width: number;
+  height: number;
+  color: string;
+  opacity: number;
+  zOffset: number;
+}) {
+  const points = useMemo(() => {
+    const w = Math.max(0.1, width) / 2;
+    const h = Math.max(0.1, height) / 2;
+    return new Float32Array([
+      -w,
+      -h,
+      zOffset,
+      w,
+      -h,
+      zOffset,
+      w,
+      h,
+      zOffset,
+      -w,
+      h,
+      zOffset,
+      -w,
+      -h,
+      zOffset,
+    ]);
+  }, [height, width, zOffset]);
+
+  return (
+    <lineLoop {...nonSelectableProps}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[points, 3]} />
+      </bufferGeometry>
+      <lineBasicMaterial color={color} transparent opacity={opacity} />
+    </lineLoop>
+  );
+});
+
+const SketchRectangleItem = memo(function SketchRectangleItem({
+  rectangle,
+  selected,
+  extrudeModeArmed,
+  onSelectSketchCircle,
+}: {
+  rectangle: SketchRectangle;
+  selected: boolean;
+  extrudeModeArmed: boolean;
+  onSelectSketchCircle: (id: string | null) => void;
+}) {
+  const fillGeometry = useMemo(
+    () =>
+      new THREE.PlaneGeometry(
+        Math.max(0.2, rectangle.width),
+        Math.max(0.2, rectangle.height)
+      ),
+    [rectangle.height, rectangle.width]
+  );
+
+  useEffect(
+    () => () => {
+      fillGeometry.dispose();
+    },
+    [fillGeometry]
+  );
+
+  return (
+    <group
+      position={rectangle.planePosition}
+      rotation={rectangle.planeRotation}
+      scale={rectangle.planeScale}
+    >
+      <group position={[rectangle.center[0], rectangle.center[1], 0]}>
+        <RectangleCurve
+          width={rectangle.width}
+          height={rectangle.height}
+          color={selected ? "#0f172a" : "#1f2937"}
+          opacity={selected ? 1 : 0.92}
+          zOffset={0.085}
+        />
+        <mesh
+          geometry={fillGeometry}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelectSketchCircle(rectangle.id);
+          }}
         >
-          <group position={[circle.center[0], circle.center[1], 0]}>
-            <CircleCurve
-              radius={circle.radius}
-              color={selectedSketchCircleId === circle.id ? "#0f172a" : "#1f2937"}
-              opacity={selectedSketchCircleId === circle.id ? 1 : 0.92}
-              zOffset={0.085}
-            />
-            <mesh position={[0, 0, 0.07]} {...nonSelectableProps}>
-              <sphereGeometry args={[0.42, 20, 20]} />
-              <meshBasicMaterial
-                color={selectedSketchCircleId === circle.id ? "#0f172a" : "#334155"}
-                transparent
-                opacity={0.9}
-                depthWrite={false}
-              />
-            </mesh>
-            <mesh {...nonSelectableProps}>
-              <ringGeometry
-                args={[
-                  Math.max(0.1, circle.radius - 0.18),
-                  circle.radius + 0.18,
-                  96,
-                ]}
-              />
-              <meshBasicMaterial
-                transparent
-                opacity={selectedSketchCircleId === circle.id ? 0.6 : 0.34}
-                color={selectedSketchCircleId === circle.id ? "#111827" : "#334155"}
-                side={THREE.DoubleSide}
-                depthWrite={false}
-              />
-            </mesh>
-            <mesh
-              onClick={(event) => {
-                event.stopPropagation();
-                onSelectSketchCircle(circle.id);
-              }}
-            >
-              <circleGeometry args={[Math.max(0.2, circle.radius), 96]} />
-              <meshBasicMaterial
-                transparent
-                opacity={selectedSketchCircleId === circle.id ? 0.1 : 0.04}
-                color={selectedSketchCircleId === circle.id ? "#0f172a" : "#334155"}
-                side={THREE.DoubleSide}
-                depthWrite={false}
-              />
-            </mesh>
-            <mesh
-              onClick={(event) => {
-                event.stopPropagation();
-                onSelectSketchCircle(circle.id);
-              }}
-            >
-              <ringGeometry
-                args={[
-                  Math.max(0.1, circle.radius - 1.2),
-                  circle.radius + 1.2,
-                  72,
-                ]}
-              />
-              <meshBasicMaterial
-                transparent
-                opacity={selectedSketchCircleId === circle.id ? 0.16 : 0.06}
-                color={selectedSketchCircleId === circle.id ? "#e2e8f0" : "#cbd5e1"}
-                side={THREE.DoubleSide}
-                depthWrite={false}
-              />
-            </mesh>
-          </group>
-        </group>
+          <meshBasicMaterial
+            transparent
+            opacity={selected ? 0.1 : extrudeModeArmed ? 0.07 : 0.03}
+            color={selected ? "#0f172a" : extrudeModeArmed ? "#64748b" : "#334155"}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+          />
+        </mesh>
+      </group>
+    </group>
+  );
+});
+
+const SketchRectangles = memo(function SketchRectangles({
+  rectangles,
+  selectedSketchCircleId,
+  extrudeModeArmed,
+  onSelectSketchCircle,
+}: {
+  rectangles: SketchRectangle[];
+  selectedSketchCircleId: string | null;
+  extrudeModeArmed: boolean;
+  onSelectSketchCircle: (id: string | null) => void;
+}) {
+  return (
+    <>
+      {rectangles.map((rectangle) => (
+        <SketchRectangleItem
+          key={rectangle.id}
+          rectangle={rectangle}
+          selected={selectedSketchCircleId === rectangle.id}
+          extrudeModeArmed={extrudeModeArmed}
+          onSelectSketchCircle={onSelectSketchCircle}
+        />
       ))}
     </>
   );
@@ -636,7 +809,7 @@ const SketchCirclePreview = memo(function SketchCirclePreview({
   );
 });
 
-const ExtrudePreviewBody = memo(function ExtrudePreviewBody({
+const SketchRectanglePreview = memo(function SketchRectanglePreview({
   preview,
 }: {
   preview: {
@@ -644,7 +817,53 @@ const ExtrudePreviewBody = memo(function ExtrudePreviewBody({
     planeRotation: Vector3Tuple;
     planeScale: Vector3Tuple;
     center: [number, number];
-    radius: number;
+    width: number;
+    height: number;
+  } | null;
+}) {
+  if (!preview || preview.width <= 0 || preview.height <= 0) return null;
+
+  return (
+    <group
+      position={preview.planePosition}
+      rotation={preview.planeRotation}
+      scale={preview.planeScale}
+    >
+      <group position={[preview.center[0], preview.center[1], 0]}>
+        <RectangleCurve
+          width={preview.width}
+          height={preview.height}
+          zOffset={0.1}
+          color="#0b1220"
+          opacity={1}
+        />
+        <mesh {...nonSelectableProps}>
+          <planeGeometry args={[preview.width, preview.height]} />
+          <meshBasicMaterial
+            transparent
+            opacity={0.14}
+            color="#0b1220"
+            side={THREE.DoubleSide}
+            depthWrite={false}
+          />
+        </mesh>
+      </group>
+    </group>
+  );
+});
+
+const ExtrudePreviewBody = memo(function ExtrudePreviewBody({
+  preview,
+}: {
+  preview: {
+    sourceProfileType: "circle" | "rectangle";
+    planePosition: Vector3Tuple;
+    planeRotation: Vector3Tuple;
+    planeScale: Vector3Tuple;
+    center: [number, number];
+    radius?: number;
+    width?: number;
+    height?: number;
     depth: number;
     direction: 1 | -1;
   } | null;
@@ -657,46 +876,143 @@ const ExtrudePreviewBody = memo(function ExtrudePreviewBody({
       rotation={preview.planeRotation}
       scale={preview.planeScale}
     >
-      <mesh
-        position={[preview.center[0], preview.center[1], (preview.direction * preview.depth) / 2]}
-        rotation={[Math.PI / 2, 0, 0]}
-        {...nonSelectableProps}
-      >
-        <cylinderGeometry args={[preview.radius, preview.radius, preview.depth, 72]} />
-        <meshStandardMaterial
-          color="#97a9be"
-          transparent
-          opacity={0.5}
-          metalness={0.1}
-          roughness={0.36}
-          depthWrite={false}
-        />
-      </mesh>
+      {preview.sourceProfileType === "circle" ? (
+        <mesh
+          position={[
+            preview.center[0],
+            preview.center[1],
+            (preview.direction * preview.depth) / 2,
+          ]}
+          rotation={[Math.PI / 2, 0, 0]}
+          {...nonSelectableProps}
+        >
+          <cylinderGeometry
+            args={[Math.max(0.1, preview.radius ?? 0.1), Math.max(0.1, preview.radius ?? 0.1), preview.depth, 28]}
+          />
+          <meshStandardMaterial
+            color="#97a9be"
+            transparent
+            opacity={0.5}
+            metalness={0.1}
+            roughness={0.36}
+            depthWrite={false}
+          />
+        </mesh>
+      ) : (
+        <mesh
+          position={[
+            preview.center[0],
+            preview.center[1],
+            (preview.direction * preview.depth) / 2,
+          ]}
+          {...nonSelectableProps}
+        >
+          <boxGeometry
+            args={[
+              Math.max(0.1, preview.width ?? 0.1),
+              Math.max(0.1, preview.height ?? 0.1),
+              preview.depth,
+            ]}
+          />
+          <meshStandardMaterial
+            color="#97a9be"
+            transparent
+            opacity={0.5}
+            metalness={0.1}
+            roughness={0.36}
+            depthWrite={false}
+          />
+        </mesh>
+      )}
     </group>
+  );
+});
+
+const BooleanPreviewMesh = memo(function BooleanPreviewMesh({
+  meshData,
+}: {
+  meshData: SolidBody["meshData"];
+}) {
+  const geometry = useMemo(() => {
+    if (!meshData) return null;
+    return meshDataToGeometry(meshData);
+  }, [meshData]);
+
+  useEffect(
+    () => () => {
+      geometry?.dispose();
+    },
+    [geometry]
+  );
+
+  if (!geometry) return null;
+
+  return (
+    <mesh geometry={geometry} {...nonSelectableProps}>
+      <meshStandardMaterial
+        color="#8fa1b7"
+        transparent
+        opacity={0.45}
+        metalness={0.1}
+        roughness={0.38}
+        depthWrite={false}
+      />
+    </mesh>
   );
 });
 
 const SolidBodyMesh = memo(function SolidBodyMesh({
   body,
   selected,
+  booleanRole,
+  selectedFaceId,
   onSelectSolidBody,
+  onSelectSolidFace,
 }: {
   body: SolidBody;
   selected: boolean;
+  booleanRole: "base" | "tool" | null;
+  selectedFaceId: BodyFaceId | null;
   onSelectSolidBody: (id: string | null) => void;
+  onSelectSolidFace: (bodyId: string, faceId: BodyFaceId) => void;
 }) {
-  const geometry = useMemo(
-    () => new THREE.CylinderGeometry(body.radius, body.radius, body.depth, 64),
-    [body.depth, body.radius]
-  );
-  const edgeGeometry = useMemo(() => new THREE.EdgesGeometry(geometry), [geometry]);
+  const sideGeometry = useMemo(() => {
+    if (body.profileType === "mesh" && body.meshData) {
+      return meshDataToGeometry(body.meshData);
+    }
+    if (body.profileType === "rectangle") {
+      return new THREE.BoxGeometry(
+        Math.max(0.1, body.width ?? 0.1),
+        Math.max(0.1, body.height ?? 0.1),
+        body.depth
+      );
+    }
+    const radius = Math.max(0.1, body.radius ?? 0.1);
+    return new THREE.CylinderGeometry(radius, radius, body.depth, 64, 1, true);
+  }, [body.depth, body.height, body.profileType, body.radius, body.width]);
+  const capGeometry = useMemo(() => {
+    if (body.profileType === "mesh" && body.meshData) {
+      return meshDataToGeometry(body.meshData);
+    }
+    if (body.profileType === "rectangle") {
+      return new THREE.BoxGeometry(
+        Math.max(0.1, body.width ?? 0.1),
+        Math.max(0.1, body.height ?? 0.1),
+        body.depth
+      );
+    }
+    const radius = Math.max(0.1, body.radius ?? 0.1);
+    return new THREE.CylinderGeometry(radius, radius, body.depth, 64);
+  }, [body.depth, body.height, body.profileType, body.radius, body.width]);
+  const edgeGeometry = useMemo(() => new THREE.EdgesGeometry(capGeometry), [capGeometry]);
 
   useEffect(
     () => () => {
       edgeGeometry.dispose();
-      geometry.dispose();
+      sideGeometry.dispose();
+      capGeometry.dispose();
     },
-    [edgeGeometry, geometry]
+    [capGeometry, edgeGeometry, sideGeometry]
   );
 
   return (
@@ -706,39 +1022,124 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
       scale={body.planeScale}
     >
       <mesh
-        position={[
-          body.center[0],
-          body.center[1],
-          ((body.direction ?? 1) * body.depth) / 2,
-        ]}
-        rotation={[Math.PI / 2, 0, 0]}
+        position={
+          body.profileType === "mesh"
+            ? [0, 0, 0]
+            : [body.center[0], body.center[1], ((body.direction ?? 1) * body.depth) / 2]
+        }
+        rotation={body.profileType === "circle" ? [Math.PI / 2, 0, 0] : [0, 0, 0]}
         userData={{ [EXPORTABLE_GEOMETRY_FLAG]: true }}
         onClick={(event) => {
           event.stopPropagation();
           onSelectSolidBody(body.id);
         }}
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          onSelectSolidFace(body.id, "side");
+        }}
       >
-        <primitive attach="geometry" object={geometry} />
+        <primitive attach="geometry" object={sideGeometry} />
         <meshStandardMaterial
-          color={selected ? "#dbe4f0" : "#b8c3d2"}
+          color={
+            selectedFaceId === "side"
+              ? "#eef4fc"
+              : booleanRole === "base"
+                ? "#dbeafe"
+                : booleanRole === "tool"
+                  ? "#fee2e2"
+                  : selected
+                    ? "#dbe4f0"
+                    : "#b8c3d2"
+          }
           metalness={0.12}
           roughness={0.28}
         />
       </mesh>
+      {body.profileType !== "mesh" ? (
+        <>
+          <mesh
+            position={[
+              body.center[0],
+              body.center[1],
+              (body.direction ?? 1) * body.depth + 0.01,
+            ]}
+            userData={{ [EXPORTABLE_GEOMETRY_FLAG]: true }}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSelectSolidFace(body.id, "top");
+            }}
+          >
+            {body.profileType === "rectangle" ? (
+              <planeGeometry
+                args={[
+                  Math.max(0.1, (body.width ?? 0.1) * 0.985),
+                  Math.max(0.1, (body.height ?? 0.1) * 0.985),
+                ]}
+              />
+            ) : (
+              <circleGeometry args={[Math.max(0.1, (body.radius ?? 0.1) * 0.985), 64]} />
+            )}
+            <meshStandardMaterial
+              color={selectedFaceId === "top" ? "#f2f7ff" : selected ? "#e5ecf5" : "#cfd8e4"}
+              metalness={0.08}
+              roughness={0.3}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+          <mesh
+            position={[
+              body.center[0],
+              body.center[1],
+              0.01,
+            ]}
+            rotation={[Math.PI, 0, 0]}
+            userData={{ [EXPORTABLE_GEOMETRY_FLAG]: true }}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSelectSolidFace(body.id, "bottom");
+            }}
+          >
+            {body.profileType === "rectangle" ? (
+              <planeGeometry
+                args={[
+                  Math.max(0.1, (body.width ?? 0.1) * 0.985),
+                  Math.max(0.1, (body.height ?? 0.1) * 0.985),
+                ]}
+              />
+            ) : (
+              <circleGeometry args={[Math.max(0.1, (body.radius ?? 0.1) * 0.985), 64]} />
+            )}
+            <meshStandardMaterial
+              color={selectedFaceId === "bottom" ? "#f2f7ff" : selected ? "#dce4ef" : "#c5cfdd"}
+              metalness={0.08}
+              roughness={0.34}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+        </>
+      ) : null}
       <lineSegments
-        position={[
-          body.center[0],
-          body.center[1],
-          ((body.direction ?? 1) * body.depth) / 2,
-        ]}
-        rotation={[Math.PI / 2, 0, 0]}
+        position={
+          body.profileType === "mesh"
+            ? [0, 0, 0]
+            : [body.center[0], body.center[1], ((body.direction ?? 1) * body.depth) / 2]
+        }
+        rotation={body.profileType === "circle" ? [Math.PI / 2, 0, 0] : [0, 0, 0]}
         geometry={edgeGeometry}
         {...nonSelectableProps}
       >
         <lineBasicMaterial
-          color={selected ? "#0f172a" : "#334155"}
+          color={
+            booleanRole === "base"
+              ? "#1d4ed8"
+              : booleanRole === "tool"
+                ? "#b91c1c"
+                : selected || selectedFaceId
+                  ? "#0f172a"
+                  : "#334155"
+          }
           transparent
-          opacity={0.52}
+          opacity={selected || selectedFaceId ? 0.68 : 0.52}
         />
       </lineSegments>
     </group>
@@ -747,12 +1148,22 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
 
 const SolidBodies = memo(function SolidBodies({
   solidBodies,
+  booleanModeActive,
+  booleanBaseBodyId,
+  booleanToolBodyId,
   selectedSolidBodyId,
+  selectedSolidFace,
   onSelectSolidBody,
+  onSelectSolidFace,
 }: {
   solidBodies: SolidBody[];
+  booleanModeActive: boolean;
+  booleanBaseBodyId: string | null;
+  booleanToolBodyId: string | null;
   selectedSolidBodyId: string | null;
+  selectedSolidFace: { bodyId: string; faceId: BodyFaceId } | null;
   onSelectSolidBody: (id: string | null) => void;
+  onSelectSolidFace: (bodyId: string, faceId: BodyFaceId) => void;
 }) {
   return (
     <group>
@@ -763,7 +1174,20 @@ const SolidBodies = memo(function SolidBodies({
             key={body.id}
             body={body}
             selected={selected}
+            booleanRole={
+              booleanModeActive
+                ? body.id === booleanBaseBodyId
+                  ? "base"
+                  : body.id === booleanToolBodyId
+                    ? "tool"
+                    : null
+                : null
+            }
+            selectedFaceId={
+              selectedSolidFace?.bodyId === body.id ? selectedSolidFace.faceId : null
+            }
             onSelectSolidBody={onSelectSolidBody}
+            onSelectSolidFace={onSelectSolidFace}
           />
         );
       })}
@@ -778,13 +1202,16 @@ function ExtrudeArrowManipulator({
   onCancel,
 }: {
   preview: {
+    sourceProfileType: "circle" | "rectangle";
     planePosition: Vector3Tuple;
     planeRotation: Vector3Tuple;
     planeScale: Vector3Tuple;
     center: [number, number];
     depth: number;
     direction: 1 | -1;
-    radius: number;
+    radius?: number;
+    width?: number;
+    height?: number;
   } | null;
   onDepthChange: (signedDepth: number) => void;
   onConfirm: () => void;
@@ -1432,11 +1859,19 @@ export const Scene3D = memo(function Scene3D({
   workPlanes,
   planeSketches,
   sketchCircles,
+  sketchRectangles,
   sketchCirclePreview,
+  sketchRectanglePreview,
   extrudePreview,
+  extrudeModeArmed,
   solidBodies,
+  booleanModeActive,
+  booleanBaseBodyId,
+  booleanToolBodyId,
+  booleanPreviewMeshData,
   selectedSketchCircleId,
   selectedSolidBodyId,
+  selectedSolidFace,
   sketchModeActive,
   activeSketchPlane,
   dimensions,
@@ -1445,6 +1880,7 @@ export const Scene3D = memo(function Scene3D({
   onSelectObject,
   onSelectSketchCircle,
   onSelectSolidBody,
+  onSelectSolidFace,
   onSketchPlanePointerDown,
   onSketchPlanePointerMove,
   onSketchPlanePointerUp,
@@ -1468,6 +1904,7 @@ export const Scene3D = memo(function Scene3D({
   workPlanes: WorkPlane[];
   planeSketches: PlaneSketch[];
   sketchCircles: SketchCircle[];
+  sketchRectangles: SketchRectangle[];
   sketchCirclePreview: {
     planeId: string;
     planePosition: Vector3Tuple;
@@ -1477,19 +1914,38 @@ export const Scene3D = memo(function Scene3D({
     radius: number;
     dragging: boolean;
   } | null;
-  extrudePreview: {
-    sourceSketchId: string;
+  sketchRectanglePreview: {
+    planeId: string;
     planePosition: Vector3Tuple;
     planeRotation: Vector3Tuple;
     planeScale: Vector3Tuple;
     center: [number, number];
-    radius: number;
+    width: number;
+    height: number;
+    dragging: boolean;
+  } | null;
+  extrudePreview: {
+    sourceSketchId: string;
+    sourceProfileType: "circle" | "rectangle";
+    planePosition: Vector3Tuple;
+    planeRotation: Vector3Tuple;
+    planeScale: Vector3Tuple;
+    center: [number, number];
+    radius?: number;
+    width?: number;
+    height?: number;
     depth: number;
     direction: 1 | -1;
   } | null;
+  extrudeModeArmed: boolean;
   solidBodies: SolidBody[];
+  booleanModeActive: boolean;
+  booleanBaseBodyId: string | null;
+  booleanToolBodyId: string | null;
+  booleanPreviewMeshData: SolidBody["meshData"] | null;
   selectedSketchCircleId: string | null;
   selectedSolidBodyId: string | null;
+  selectedSolidFace: { bodyId: string; faceId: BodyFaceId } | null;
   sketchModeActive: boolean;
   activeSketchPlane: {
     id: string;
@@ -1503,6 +1959,7 @@ export const Scene3D = memo(function Scene3D({
   onSelectObject: (selection: SceneSelection, additive: boolean) => void;
   onSelectSketchCircle: (id: string | null) => void;
   onSelectSolidBody: (id: string | null) => void;
+  onSelectSolidFace: (bodyId: string, faceId: BodyFaceId) => void;
   onSketchPlanePointerDown: (
     localPoint: [number, number],
     planeState: {
@@ -1559,6 +2016,7 @@ export const Scene3D = memo(function Scene3D({
         workPlanes={workPlanes}
         primarySelection={primarySelection}
         secondarySelection={secondarySelection}
+        activePlaneId={activeSketchPlane?.id ?? null}
         onSelect={onSelectObject}
       />
       <PlaneSketches workPlanes={workPlanes} planeSketches={planeSketches} />
@@ -1572,10 +2030,21 @@ export const Scene3D = memo(function Scene3D({
       <SketchCircles
         circles={sketchCircles}
         selectedSketchCircleId={selectedSketchCircleId}
+        extrudeModeArmed={extrudeModeArmed}
+        onSelectSketchCircle={onSelectSketchCircle}
+      />
+      <SketchRectangles
+        rectangles={sketchRectangles}
+        selectedSketchCircleId={selectedSketchCircleId}
+        extrudeModeArmed={extrudeModeArmed}
         onSelectSketchCircle={onSelectSketchCircle}
       />
       <SketchCirclePreview preview={sketchCirclePreview} />
+      <SketchRectanglePreview preview={sketchRectanglePreview} />
       <ExtrudePreviewBody preview={extrudePreview} />
+      {booleanModeActive && booleanPreviewMeshData ? (
+        <BooleanPreviewMesh meshData={booleanPreviewMeshData} />
+      ) : null}
       <ExtrudeArrowManipulator
         preview={extrudePreview}
         onDepthChange={onExtrudePreviewDepthChange}
@@ -1585,8 +2054,13 @@ export const Scene3D = memo(function Scene3D({
       <group ref={exportRootRef}>
         <SolidBodies
           solidBodies={solidBodies}
+          booleanModeActive={booleanModeActive}
+          booleanBaseBodyId={booleanBaseBodyId}
+          booleanToolBodyId={booleanToolBodyId}
           selectedSolidBodyId={selectedSolidBodyId}
+          selectedSolidFace={selectedSolidFace}
           onSelectSolidBody={onSelectSolidBody}
+          onSelectSolidFace={onSelectSolidFace}
         />
       </group>
       <TransformGizmo
