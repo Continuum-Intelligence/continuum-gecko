@@ -1,5 +1,10 @@
 import type {
+  BooleanFeature,
+  ExtrudeFeature,
+  FeatureOrderItem,
   DistanceDimension,
+  SketchRectangle,
+  SketchFeature,
   SketchCircle,
   SceneSelection,
   SceneSnapshot,
@@ -45,6 +50,25 @@ export function cloneSketchCircle(circle: SketchCircle): SketchCircle {
   };
 }
 
+export function cloneSketchRectangle(
+  rectangle: SketchRectangle
+): SketchRectangle {
+  return {
+    ...rectangle,
+    center: [...rectangle.center],
+    planePosition: [...rectangle.planePosition],
+    planeRotation: [...rectangle.planeRotation],
+    planeScale: [...rectangle.planeScale],
+  };
+}
+
+export function cloneSketchFeature(feature: SketchFeature): SketchFeature {
+  return {
+    ...feature,
+    profileIds: [...feature.profileIds],
+  };
+}
+
 export function cloneSolidBody(body: SolidBody): SolidBody {
   return {
     ...body,
@@ -52,14 +76,43 @@ export function cloneSolidBody(body: SolidBody): SolidBody {
     planePosition: [...body.planePosition],
     planeRotation: [...body.planeRotation],
     planeScale: [...body.planeScale],
+    transform: {
+      position: [...body.transform.position],
+      rotation: [...body.transform.rotation],
+      scale: [...body.transform.scale],
+    },
+    meshData: body.meshData
+      ? {
+          positions: [...body.meshData.positions],
+          normals: [...body.meshData.normals],
+          indices: [...body.meshData.indices],
+        }
+      : undefined,
   };
+}
+
+export function cloneExtrudeFeature(feature: ExtrudeFeature): ExtrudeFeature {
+  return { ...feature };
+}
+
+export function cloneBooleanFeature(feature: BooleanFeature): BooleanFeature {
+  return { ...feature };
+}
+
+export function cloneFeatureOrderItem(item: FeatureOrderItem): FeatureOrderItem {
+  return { ...item };
 }
 
 export function cloneSceneSnapshot(snapshot: SceneSnapshot): SceneSnapshot {
   return {
     workPlanes: snapshot.workPlanes.map(cloneWorkPlane),
     sketchCircles: snapshot.sketchCircles.map(cloneSketchCircle),
+    sketchRectangles: (snapshot.sketchRectangles ?? []).map(cloneSketchRectangle),
+    sketchFeatures: snapshot.sketchFeatures.map(cloneSketchFeature),
     solidBodies: snapshot.solidBodies.map(cloneSolidBody),
+    extrudeFeatures: snapshot.extrudeFeatures.map(cloneExtrudeFeature),
+    booleanFeatures: (snapshot.booleanFeatures ?? []).map(cloneBooleanFeature),
+    featureOrder: snapshot.featureOrder.map(cloneFeatureOrderItem),
     dimensions: snapshot.dimensions.map(cloneDistanceDimension),
     primarySelection: cloneSelection(snapshot.primarySelection),
     secondarySelection: cloneSelection(snapshot.secondarySelection),

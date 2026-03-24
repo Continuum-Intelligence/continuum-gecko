@@ -4,6 +4,9 @@ import {
   getScaleDisplayBase,
 } from "../../helpers/sceneMath";
 import type {
+  BooleanOperation,
+  BodyFaceId,
+  CadEntitySelection,
   DimensionOverlayItem,
   EditingTransformField,
   MousePosition,
@@ -291,6 +294,22 @@ export const InspectorWindow = memo(function InspectorWindow({
   transformMode,
   onSetTransformMode,
   selectedPlane,
+  selectedEntityType,
+  selectedEntityLabel,
+  bodyPositionDraft,
+  onBodyPositionDraftChange,
+  onSnapBodyToOrigin,
+  onDropBodyToGround,
+  onCenterAlignBodies,
+  canCenterAlignBodies,
+  activeSketchPlaneName,
+  sketchPlaneSelectionMode,
+  onToggleSketchPlaneSelectionMode,
+  selectedSketchProfileType,
+  radiusDraft,
+  diameterDraft,
+  widthDraft,
+  heightDraft,
 }: {
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -316,13 +335,29 @@ export const InspectorWindow = memo(function InspectorWindow({
   transformMode: TransformMode;
   onSetTransformMode: (mode: TransformMode) => void;
   selectedPlane: WorkPlane | null;
+  selectedEntityType: "none" | "body" | "plane" | "profile" | "face";
+  selectedEntityLabel: string;
+  bodyPositionDraft: { x: string; y: string; z: string };
+  onBodyPositionDraftChange: (axis: "x" | "y" | "z", value: string) => void;
+  onSnapBodyToOrigin: () => void;
+  onDropBodyToGround: () => void;
+  onCenterAlignBodies: () => void;
+  canCenterAlignBodies: boolean;
+  activeSketchPlaneName: string;
+  sketchPlaneSelectionMode: boolean;
+  onToggleSketchPlaneSelectionMode: () => void;
+  selectedSketchProfileType: "circle" | "rectangle" | null;
+  radiusDraft: string;
+  diameterDraft: string;
+  widthDraft: string;
+  heightDraft: string;
 }) {
   const modeButtons = [
     { mode: "move", label: "Move" },
     { mode: "rotate", label: "Rotate" },
     { mode: "scale", label: "Scale" },
   ] as const;
-  const hasSelection = !!primarySelection && !!transformTarget;
+  const hasSelection = !!transformTarget;
   const formatValue = (value: number) => value.toFixed(1);
 
   const renderTransformValueCard = (
@@ -398,10 +433,12 @@ export const InspectorWindow = memo(function InspectorWindow({
               <div
                 className="inspector-window__title"
                 onDoubleClick={() => {
-                  if (selectedObjectName) onStartRenaming();
+                  if (selectedObjectName && selectedEntityType === "plane") {
+                    onStartRenaming();
+                  }
                 }}
               >
-                {selectedObjectName ?? "No Selection"}
+                {selectedObjectName ?? selectedEntityLabel}
               </div>
             )}
           </div>
@@ -417,39 +454,14 @@ export const InspectorWindow = memo(function InspectorWindow({
 
         <div className="inspector-window__body">
           <div className="inspector-window__section">
-            <div className="inspector-window__section-title">Transform</div>
-            <div className="inspector-window__mode-row">
-              {modeButtons.map((button) => (
-                <button
-                  key={button.mode}
-                  className={`inspector-window__mode-button${
-                    transformMode === button.mode
-                      ? " inspector-window__mode-button--active"
-                      : ""
-                  }`}
-                  disabled={!hasSelection}
-                  onClick={() =>
-                    onSetTransformMode(
-                      transformMode === button.mode ? null : button.mode
-                    )
-                  }
-                  type="button"
-                >
-                  {button.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="inspector-window__section">
             <div className="inspector-window__section-title">Selection</div>
             <div className="inspector-window__meta-row">
-              <span>Type</span>
-              <span>{primarySelection?.objectKind ?? "None"}</span>
+              <span>Selected</span>
+              <span>{selectedEntityLabel}</span>
             </div>
             <div className="inspector-window__meta-row">
-              <span>Level</span>
-              <span>{primarySelection?.selectionLevel ?? "None"}</span>
+              <span>Type</span>
+              <span>{selectedEntityType}</span>
             </div>
             <div className="inspector-window__meta-row">
               <span>Primary</span>
@@ -459,42 +471,166 @@ export const InspectorWindow = memo(function InspectorWindow({
               <span>Secondary</span>
               <span>{formatSelectionLevel(secondarySelection)}</span>
             </div>
-            <div className="inspector-window__meta-row">
-              <span>Mode</span>
-              <span>{transformMode ?? "None"}</span>
-            </div>
-            <div className="inspector-window__meta-row">
-              <span>Hint</span>
-              <span>Shift+Select, then D</span>
-            </div>
           </div>
 
-          <div className="inspector-window__section">
-            <div className="inspector-window__section-title">Position</div>
-            <div className="inspector-window__grid">
-              {renderTransformValueCard("position", "x", transformTarget ? transformTarget.position[0] : null)}
-              {renderTransformValueCard("position", "y", transformTarget ? transformTarget.position[1] : null)}
-              {renderTransformValueCard("position", "z", transformTarget ? transformTarget.position[2] : null)}
-            </div>
-          </div>
+          {selectedEntityType === "body" ? (
+            <>
+              <div className="inspector-window__section">
+                <div className="inspector-window__section-title">Transform</div>
+                <div className="inspector-window__mode-row">
+                  <button
+                    className="inspector-window__mode-button inspector-window__mode-button--active"
+                    type="button"
+                  >
+                    Move
+                  </button>
+                  <button className="inspector-window__mode-button" disabled type="button">
+                    Rotate
+                  </button>
+                  <button className="inspector-window__mode-button" disabled type="button">
+                    Scale
+                  </button>
+                </div>
+              </div>
+              <div className="inspector-window__section">
+                <div className="inspector-window__section-title">Position (mm)</div>
+                <div className="tools-window__input-grid">
+                  <label>
+                    X
+                    <input
+                      inputMode="decimal"
+                      type="number"
+                      value={bodyPositionDraft.x}
+                      onChange={(event) =>
+                        onBodyPositionDraftChange("x", event.target.value)
+                      }
+                    />
+                  </label>
+                  <label>
+                    Y
+                    <input
+                      inputMode="decimal"
+                      type="number"
+                      value={bodyPositionDraft.y}
+                      onChange={(event) =>
+                        onBodyPositionDraftChange("y", event.target.value)
+                      }
+                    />
+                  </label>
+                  <label>
+                    Z
+                    <input
+                      inputMode="decimal"
+                      type="number"
+                      value={bodyPositionDraft.z}
+                      onChange={(event) =>
+                        onBodyPositionDraftChange("z", event.target.value)
+                      }
+                    />
+                  </label>
+                </div>
+                <button className="tools-window__action-button" onClick={onSnapBodyToOrigin} type="button">
+                  Snap to Origin
+                </button>
+                <button className="tools-window__action-button" onClick={onDropBodyToGround} type="button">
+                  Drop to Ground
+                </button>
+                <button
+                  className="tools-window__action-button tools-window__action-button--primary"
+                  disabled={!canCenterAlignBodies}
+                  onClick={onCenterAlignBodies}
+                  type="button"
+                >
+                  Center Align
+                </button>
+              </div>
+            </>
+          ) : null}
 
-          <div className="inspector-window__section">
-            <div className="inspector-window__section-title">Rotation</div>
-            <div className="inspector-window__grid">
-              {renderTransformValueCard("rotation", "x", transformTarget ? transformTarget.rotation[0] : null)}
-              {renderTransformValueCard("rotation", "y", transformTarget ? transformTarget.rotation[1] : null)}
-              {renderTransformValueCard("rotation", "z", transformTarget ? transformTarget.rotation[2] : null)}
+          {selectedEntityType === "plane" || selectedEntityType === "face" ? (
+            <div className="inspector-window__section">
+              <div className="inspector-window__section-title">Sketch Context</div>
+              <div className="inspector-window__meta-row">
+                <span>Active Sketch Plane</span>
+                <span>{activeSketchPlaneName}</span>
+              </div>
+              <button
+                className={`tools-window__action-button${
+                  sketchPlaneSelectionMode ? " tools-window__action-button--active" : ""
+                }`}
+                onClick={onToggleSketchPlaneSelectionMode}
+                type="button"
+              >
+                {sketchPlaneSelectionMode ? "Cancel Plane Pick" : "Set Active Sketch Plane"}
+              </button>
             </div>
-          </div>
+          ) : null}
 
-          <div className="inspector-window__section">
-            <div className="inspector-window__section-title">Scale</div>
-            <div className="inspector-window__grid">
-              {renderTransformValueCard("scale", "x", transformTarget ? transformTarget.scale[0] : null)}
-              {renderTransformValueCard("scale", "y", transformTarget ? transformTarget.scale[1] : null)}
-              {renderTransformValueCard("scale", "z", transformTarget ? transformTarget.scale[2] : null)}
+          {selectedEntityType === "profile" ? (
+            <div className="inspector-window__section">
+              <div className="inspector-window__section-title">Profile Dimensions (mm)</div>
+              {selectedSketchProfileType === "circle" ? (
+                <>
+                  <div className="inspector-window__meta-row">
+                    <span>Radius</span>
+                    <span>{radiusDraft || "--"}</span>
+                  </div>
+                  <div className="inspector-window__meta-row">
+                    <span>Diameter</span>
+                    <span>{diameterDraft || "--"}</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="inspector-window__meta-row">
+                    <span>Width</span>
+                    <span>{widthDraft || "--"}</span>
+                  </div>
+                  <div className="inspector-window__meta-row">
+                    <span>Height</span>
+                    <span>{heightDraft || "--"}</span>
+                  </div>
+                </>
+              )}
             </div>
-          </div>
+          ) : null}
+
+          {selectedEntityType === "plane" ? (
+            <>
+              <div className="inspector-window__section">
+                <div className="inspector-window__section-title">Transform</div>
+                <div className="inspector-window__mode-row">
+                  {modeButtons.map((button) => (
+                    <button
+                      key={button.mode}
+                      className={`inspector-window__mode-button${
+                        transformMode === button.mode
+                          ? " inspector-window__mode-button--active"
+                          : ""
+                      }`}
+                      disabled={!hasSelection}
+                      onClick={() =>
+                        onSetTransformMode(
+                          transformMode === button.mode ? null : button.mode
+                        )
+                      }
+                      type="button"
+                    >
+                      {button.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="inspector-window__section">
+                <div className="inspector-window__section-title">Position</div>
+                <div className="inspector-window__grid">
+                  {renderTransformValueCard("position", "x", transformTarget ? transformTarget.position[0] : null)}
+                  {renderTransformValueCard("position", "y", transformTarget ? transformTarget.position[1] : null)}
+                  {renderTransformValueCard("position", "z", transformTarget ? transformTarget.position[2] : null)}
+                </div>
+              </div>
+            </>
+          ) : null}
         </div>
       </div>
     </>
@@ -512,51 +648,138 @@ export const ViewportWarning = memo(function ViewportWarning({
 export const ToolsWindow = memo(function ToolsWindow({
   collapsed,
   onToggleCollapsed,
+  toolsFlow,
+  onOpenSketchFlow,
+  onOpenExtrudeFlow,
+  onOpenBooleanFlow,
+  onOpenMoveFlow,
+  onBackToToolsFlow,
+  onDoneSketchFlow,
+  sketchPlaneSelectionMode,
+  onToggleSketchPlaneSelectionMode,
   sketchModeActive,
   onSetSketchModeActive,
   activeSketchPlaneName,
   canSketch,
   activeSketchTool,
   onActivateCircleTool,
+  onActivateRectangleTool,
+  sketchProfiles,
+  selectedSketchCircleId,
+  onSelectSketchProfile,
+  bodyItems,
+  selectedSolidBodyId,
+  selectedSolidFace,
+  onSelectBody,
+  selectedEntity,
   radiusDraft,
   diameterDraft,
   onRadiusDraftChange,
   onDiameterDraftChange,
-  selectedSketchCircleName,
+  widthDraft,
+  heightDraft,
+  onWidthDraftChange,
+  onHeightDraftChange,
+  selectedSketchProfileName,
+  selectedSketchProfileType,
   extrudeDepthDraft,
   onExtrudeDepthDraftChange,
   onExtrude,
   canExtrude,
   extrudeModeActive,
+  extrudeModeWaiting,
   liveExtrudeDepth,
   onConfirmExtrude,
   onCancelExtrude,
   onExportStl,
   canExportStl,
+  booleanModeActive,
+  booleanStep,
+  booleanOperation,
+  onStartBooleanOperation,
+  onCancelBooleanMode,
+  onConfirmBoolean,
+  booleanBaseBodyName,
+  booleanToolBodyName,
+  booleanPreviewReady,
+  movePositionDraft,
+  onMovePositionDraftChange,
+  onSnapToOrigin,
+  onDropToGround,
+  onCenterAlign,
+  moveReferenceBodyId,
+  onMoveReferenceBodyChange,
+  moveDragActive,
 }: {
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  toolsFlow: "home" | "sketch" | "extrude" | "boolean" | "move";
+  onOpenSketchFlow: () => void;
+  onOpenExtrudeFlow: () => void;
+  onOpenBooleanFlow: () => void;
+  onOpenMoveFlow: () => void;
+  onBackToToolsFlow: () => void;
+  onDoneSketchFlow: () => void;
+  sketchPlaneSelectionMode: boolean;
+  onToggleSketchPlaneSelectionMode: () => void;
   sketchModeActive: boolean;
   onSetSketchModeActive: (active: boolean) => void;
   activeSketchPlaneName: string;
   canSketch: boolean;
   activeSketchTool: SketchTool;
   onActivateCircleTool: () => void;
+  onActivateRectangleTool: () => void;
+  sketchProfiles: Array<{
+    id: string;
+    name: string;
+    profileType: "circle" | "rectangle";
+    hasExtrusion: boolean;
+  }>;
+  selectedSketchCircleId: string | null;
+  onSelectSketchProfile: (id: string) => void;
+  bodyItems: Array<{ id: string; name: string }>;
+  selectedSolidBodyId: string | null;
+  selectedSolidFace: { bodyId: string; faceId: BodyFaceId } | null;
+  onSelectBody: (id: string | null) => void;
+  selectedEntity: CadEntitySelection;
   radiusDraft: string;
   diameterDraft: string;
   onRadiusDraftChange: (value: string) => void;
   onDiameterDraftChange: (value: string) => void;
-  selectedSketchCircleName: string | null;
+  widthDraft: string;
+  heightDraft: string;
+  onWidthDraftChange: (value: string) => void;
+  onHeightDraftChange: (value: string) => void;
+  selectedSketchProfileName: string | null;
+  selectedSketchProfileType: "circle" | "rectangle" | null;
   extrudeDepthDraft: string;
   onExtrudeDepthDraftChange: (value: string) => void;
   onExtrude: () => void;
   canExtrude: boolean;
   extrudeModeActive: boolean;
+  extrudeModeWaiting: boolean;
   liveExtrudeDepth: number | null;
   onConfirmExtrude: () => void;
   onCancelExtrude: () => void;
   onExportStl: () => void;
   canExportStl: boolean;
+  booleanModeActive: boolean;
+  booleanStep: "idle" | "pick-base" | "pick-tool" | "ready";
+  booleanOperation: BooleanOperation;
+  onStartBooleanOperation: (operation: BooleanOperation) => void;
+  onCancelBooleanMode: () => void;
+  onConfirmBoolean: () => void;
+  booleanBaseBodyName: string | null;
+  booleanToolBodyName: string | null;
+  booleanPreviewReady: boolean;
+  movePositionDraft: { x: string; y: string; z: string };
+  onMovePositionDraftChange: (axis: "x" | "y" | "z", value: string) => void;
+  onSnapToOrigin: () => void;
+  onDropToGround: () => void;
+  onCenterAlign: () => void;
+  moveReferenceBodyId: string | null;
+  onMoveReferenceBodyChange: (id: string | null) => void;
+  moveDragActive: boolean;
 }) {
   return (
     <>
@@ -586,119 +809,563 @@ export const ToolsWindow = memo(function ToolsWindow({
         </div>
 
         <div className="tools-window__body">
-          <div className="tools-window__section">
-            <div className="tools-window__section-title">Sketch</div>
-            <div className="tools-window__meta-row">
-              <span>Plane</span>
-              <span>{activeSketchPlaneName}</span>
+          {toolsFlow === "home" ? (
+            <div className="tools-window__section">
+              <div className="tools-window__section-title">Tool Modes</div>
+              <div className="tools-window__meta-row">
+                <span>Selected</span>
+                <span>
+                  {selectedEntity?.kind === "profile"
+                    ? "Profile"
+                    : selectedEntity?.kind === "face"
+                      ? `Face (${selectedEntity.faceId})`
+                      : selectedEntity?.kind === "body"
+                        ? "Body"
+                        : "None"}
+                </span>
+              </div>
+              <button
+                className="tools-window__action-button tools-window__action-button--primary"
+                onClick={onOpenSketchFlow}
+                type="button"
+              >
+                Sketch
+              </button>
+              <button
+                className="tools-window__action-button tools-window__action-button--primary"
+                onClick={onOpenExtrudeFlow}
+                type="button"
+              >
+                Extrude
+              </button>
+              <button
+                className="tools-window__action-button tools-window__action-button--primary"
+                onClick={onOpenBooleanFlow}
+                type="button"
+              >
+                Boolean
+              </button>
+              <button
+                className="tools-window__action-button tools-window__action-button--primary"
+                onClick={onOpenMoveFlow}
+                type="button"
+              >
+                Move
+              </button>
+              <button
+                className="tools-window__action-button"
+                disabled={!canExportStl}
+                onClick={onExportStl}
+                type="button"
+              >
+                Export to STL
+              </button>
             </div>
-            <button
-              className={`tools-window__action-button${
-                sketchModeActive ? " tools-window__action-button--active" : ""
-              }`}
-              disabled={!canSketch}
-              onClick={() => onSetSketchModeActive(!sketchModeActive)}
-              type="button"
-            >
-              {sketchModeActive ? "Exit Sketch Mode" : "Start Sketch"}
-            </button>
-            <button
-              className={`tools-window__action-button${
-                activeSketchTool === "circle" ? " tools-window__action-button--active" : ""
-              }`}
-              disabled={!sketchModeActive}
-              onClick={onActivateCircleTool}
-              type="button"
-            >
-              Circle (Click + Drag)
-            </button>
-            <div className="tools-window__hint">
-              Drag from plane origin to define radius.
+          ) : null}
+
+          {toolsFlow === "sketch" ? (
+            <div className="tools-window__section">
+              <div className="tools-window__flow-row">
+                <div className="tools-window__section-title">Sketch</div>
+                <button
+                  className="tools-window__flow-done"
+                  onClick={onDoneSketchFlow}
+                  type="button"
+                >
+                  Done
+                </button>
+              </div>
+              <div className="tools-window__meta-row">
+                <span>Plane</span>
+                <span>{activeSketchPlaneName}</span>
+              </div>
+              <button
+                className={`tools-window__action-button${
+                  sketchPlaneSelectionMode
+                    ? " tools-window__action-button--active"
+                    : ""
+                }`}
+                onClick={onToggleSketchPlaneSelectionMode}
+                type="button"
+              >
+                {sketchPlaneSelectionMode ? "Cancel Plane Pick" : "Select Plane"}
+              </button>
+              {sketchPlaneSelectionMode ? (
+                <div className="tools-window__hint">
+                  Click a work plane or solid face in the viewport.
+                </div>
+              ) : null}
+              {!canSketch ? (
+                <div className="tools-window__hint">Select a plane</div>
+              ) : null}
+              <button
+                className={`tools-window__action-button${
+                  sketchModeActive ? " tools-window__action-button--active" : ""
+                }`}
+                disabled={!canSketch || sketchPlaneSelectionMode}
+                onClick={() => onSetSketchModeActive(!sketchModeActive)}
+                type="button"
+              >
+                {sketchModeActive ? "Stop Sketch" : "Start Sketch"}
+              </button>
+              <button
+                className={`tools-window__action-button${
+                  activeSketchTool === "circle"
+                    ? " tools-window__action-button--active"
+                    : ""
+                }`}
+                disabled={!sketchModeActive || sketchPlaneSelectionMode}
+                onClick={onActivateCircleTool}
+                type="button"
+              >
+                Draw Circle
+              </button>
+              <button
+                className={`tools-window__action-button${
+                  activeSketchTool === "rectangle"
+                    ? " tools-window__action-button--active"
+                    : ""
+                }`}
+                disabled={!sketchModeActive || sketchPlaneSelectionMode}
+                onClick={onActivateRectangleTool}
+                type="button"
+              >
+                Draw Rectangle
+              </button>
+              <div className="tools-window__hint">
+                {activeSketchTool === "rectangle"
+                  ? "Drag from origin center to define width and height."
+                  : "Drag from plane origin to define radius."}
+              </div>
+              <div className="tools-window__profile-list">
+                {sketchProfiles.length === 0 ? (
+                  <div className="tools-window__profile-empty">No profiles yet</div>
+                ) : (
+                  sketchProfiles.map((profile) => (
+                    <button
+                      key={profile.id}
+                      className={`tools-window__profile-item${
+                        selectedSketchCircleId === profile.id
+                          ? " tools-window__profile-item--active"
+                          : ""
+                      }`}
+                      onClick={() => onSelectSketchProfile(profile.id)}
+                      type="button"
+                    >
+                      <span>{profile.name}</span>
+                      <span>
+                        {profile.profileType === "circle" ? "Circle" : "Rectangle"}
+                        {profile.hasExtrusion ? " · Extruded" : ""}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+              {selectedSketchProfileName && selectedSketchProfileType === "circle" ? (
+                <div className="tools-window__input-grid">
+                  <label>
+                    Radius (mm)
+                    <input
+                      inputMode="decimal"
+                      min={0.1}
+                      step={0.1}
+                      type="number"
+                      value={radiusDraft}
+                      onChange={(event) => onRadiusDraftChange(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    Diameter (mm)
+                    <input
+                      inputMode="decimal"
+                      min={0.2}
+                      step={0.1}
+                      type="number"
+                      value={diameterDraft}
+                      onChange={(event) => onDiameterDraftChange(event.target.value)}
+                    />
+                  </label>
+                </div>
+              ) : null}
+              {selectedSketchProfileName &&
+              selectedSketchProfileType === "rectangle" ? (
+                <div className="tools-window__input-grid">
+                  <label>
+                    Width (mm)
+                    <input
+                      inputMode="decimal"
+                      min={0.1}
+                      step={0.1}
+                      type="number"
+                      value={widthDraft}
+                      onChange={(event) => onWidthDraftChange(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    Height (mm)
+                    <input
+                      inputMode="decimal"
+                      min={0.1}
+                      step={0.1}
+                      type="number"
+                      value={heightDraft}
+                      onChange={(event) => onHeightDraftChange(event.target.value)}
+                    />
+                  </label>
+                </div>
+              ) : null}
             </div>
-            <div className="tools-window__input-grid">
-              <label>
-                Radius
+          ) : null}
+
+          {toolsFlow === "extrude" ? (
+            <div className="tools-window__section">
+              <div className="tools-window__flow-row">
+                <div className="tools-window__section-title">Extrude</div>
+                <button
+                  className="tools-window__flow-done"
+                  onClick={onBackToToolsFlow}
+                  type="button"
+                >
+                  Back
+                </button>
+              </div>
+              <div className="tools-window__profile-list">
+                {sketchProfiles.length === 0 ? (
+                  <div className="tools-window__profile-empty">No profiles available</div>
+                ) : (
+                  sketchProfiles.map((profile) => (
+                    <button
+                      key={profile.id}
+                      className={`tools-window__profile-item${
+                        selectedSketchCircleId === profile.id
+                          ? " tools-window__profile-item--active"
+                          : ""
+                      }`}
+                      onClick={() => onSelectSketchProfile(profile.id)}
+                      type="button"
+                    >
+                      <span>{profile.name}</span>
+                      <span>{profile.hasExtrusion ? "Linked" : "Ready"}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+              <div className="tools-window__profile-list">
+                {bodyItems.length === 0 ? (
+                  <div className="tools-window__profile-empty">No bodies yet</div>
+                ) : (
+                  bodyItems.map((body) => (
+                    <button
+                      key={body.id}
+                      className={`tools-window__profile-item${
+                        selectedSolidBodyId === body.id
+                          ? " tools-window__profile-item--active"
+                          : ""
+                      }`}
+                      onClick={() => onSelectBody(body.id)}
+                      type="button"
+                    >
+                      <span>{body.name}</span>
+                      <span>
+                        {selectedSolidFace?.bodyId === body.id
+                          ? `Face ${selectedSolidFace.faceId}`
+                          : "Body"}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+              <div className="tools-window__meta-row">
+                <span>Selected</span>
+                <span>{selectedSketchProfileName ?? "None"}</span>
+              </div>
+              <label className="tools-window__stacked-input">
+                Depth (mm)
                 <input
                   inputMode="decimal"
                   min={0.1}
                   step={0.1}
                   type="number"
-                  value={radiusDraft}
-                  onChange={(event) => onRadiusDraftChange(event.target.value)}
+                  value={extrudeDepthDraft}
+                  onChange={(event) => onExtrudeDepthDraftChange(event.target.value)}
                 />
               </label>
-              <label>
-                Diameter
-                <input
-                  inputMode="decimal"
-                  min={0.2}
-                  step={0.1}
-                  type="number"
-                  value={diameterDraft}
-                  onChange={(event) => onDiameterDraftChange(event.target.value)}
-                />
-              </label>
+              {extrudeModeActive ? (
+                <div className="tools-window__meta-row tools-window__meta-row--active">
+                  <span>{extrudeModeWaiting ? "Extrude Mode" : "Live Depth (mm)"}</span>
+                  <span>
+                    {extrudeModeWaiting
+                      ? "Select profile"
+                      : liveExtrudeDepth
+                        ? `${liveExtrudeDepth.toFixed(2)} mm`
+                        : "0.00 mm"}
+                  </span>
+                </div>
+              ) : null}
+              <button
+                className={`tools-window__action-button tools-window__action-button--primary${
+                  extrudeModeActive ? " tools-window__action-button--active" : ""
+                }`}
+                disabled={!canExtrude && !extrudeModeActive}
+                onClick={onExtrude}
+                type="button"
+              >
+                {extrudeModeActive ? "Extrude Active" : "Extrude"}
+              </button>
+              {extrudeModeActive ? (
+                <>
+                  <button
+                    className="tools-window__action-button tools-window__action-button--active"
+                    onClick={onConfirmExtrude}
+                    type="button"
+                  >
+                    Confirm Extrude
+                  </button>
+                  <button
+                    className="tools-window__action-button"
+                    onClick={onCancelExtrude}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : null}
             </div>
-          </div>
+          ) : null}
 
-          <div className="tools-window__section">
-            <div className="tools-window__section-title">Extrude</div>
-            <div className="tools-window__meta-row">
-              <span>Profile</span>
-              <span>{selectedSketchCircleName ?? "None"}</span>
-            </div>
-            <label className="tools-window__stacked-input">
-              Depth
-              <input
-                inputMode="decimal"
-                min={0.1}
-                step={0.1}
-                type="number"
-                value={extrudeDepthDraft}
-                onChange={(event) => onExtrudeDepthDraftChange(event.target.value)}
-              />
-            </label>
-            {extrudeModeActive ? (
-              <div className="tools-window__meta-row tools-window__meta-row--active">
-                <span>Live Depth</span>
-                <span>{liveExtrudeDepth ? `${liveExtrudeDepth.toFixed(2)} mm` : "0.00 mm"}</span>
+          {toolsFlow === "boolean" ? (
+            <div className="tools-window__section">
+              <div className="tools-window__flow-row">
+                <div className="tools-window__section-title">Boolean</div>
+                <button
+                  className="tools-window__flow-done"
+                  onClick={onBackToToolsFlow}
+                  type="button"
+                >
+                  Back
+                </button>
               </div>
-            ) : null}
-            <button
-              className="tools-window__action-button tools-window__action-button--primary"
-              disabled={!canExtrude}
-              onClick={onExtrude}
-              type="button"
-            >
-              {extrudeModeActive ? "Adjust in Viewport" : "Extrude (Drag)"}
-            </button>
-            {extrudeModeActive ? (
-              <>
+              <div className="tools-window__input-grid">
                 <button
-                  className="tools-window__action-button tools-window__action-button--active"
-                  onClick={onConfirmExtrude}
+                  className={`tools-window__action-button${
+                    booleanOperation === "union"
+                      ? " tools-window__action-button--active"
+                      : ""
+                  }`}
+                  onClick={() => onStartBooleanOperation("union")}
                   type="button"
                 >
-                  Confirm Extrude
+                  Union
                 </button>
                 <button
-                  className="tools-window__action-button"
-                  onClick={onCancelExtrude}
+                  className={`tools-window__action-button${
+                    booleanOperation === "subtract"
+                      ? " tools-window__action-button--active"
+                      : ""
+                  }`}
+                  onClick={() => onStartBooleanOperation("subtract")}
                   type="button"
                 >
-                  Cancel
+                  Subtract
                 </button>
-              </>
-            ) : null}
-            <button
-              className="tools-window__action-button"
-              disabled={!canExportStl}
-              onClick={onExportStl}
-              type="button"
-            >
-              Export to STL
-            </button>
-          </div>
+                <button
+                  className={`tools-window__action-button${
+                    booleanOperation === "intersect"
+                      ? " tools-window__action-button--active"
+                      : ""
+                  }`}
+                  onClick={() => onStartBooleanOperation("intersect")}
+                  type="button"
+                >
+                  Intersect
+                </button>
+              </div>
+              <div className="tools-window__meta-row">
+                <span>Base Body</span>
+                <span>{booleanBaseBodyName ?? "Select in viewport"}</span>
+              </div>
+              <div className="tools-window__meta-row">
+                <span>Tool Body</span>
+                <span>{booleanToolBodyName ?? "Select in viewport"}</span>
+              </div>
+              <div className="tools-window__meta-row tools-window__meta-row--active">
+                <span>Step</span>
+                <span>
+                  {booleanStep === "pick-base"
+                    ? "Pick base body"
+                    : booleanStep === "pick-tool"
+                      ? "Pick tool body"
+                      : booleanStep === "ready"
+                        ? booleanPreviewReady
+                          ? "Preview ready"
+                          : "No overlap/invalid"
+                        : "Choose operation"}
+                </span>
+              </div>
+              {booleanModeActive ? (
+                <>
+                  <button
+                    className="tools-window__action-button tools-window__action-button--primary"
+                    disabled={!booleanPreviewReady}
+                    onClick={onConfirmBoolean}
+                    type="button"
+                  >
+                    Confirm Boolean
+                  </button>
+                  <button
+                    className="tools-window__action-button"
+                    onClick={onCancelBooleanMode}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+
+          {toolsFlow === "move" ? (
+            <div className="tools-window__section">
+              <div className="tools-window__flow-row">
+                <div className="tools-window__section-title">Move</div>
+                <button
+                  className="tools-window__flow-done"
+                  onClick={onBackToToolsFlow}
+                  type="button"
+                >
+                  Back
+                </button>
+              </div>
+              <div className="tools-window__profile-list">
+                {bodyItems.length === 0 ? (
+                  <div className="tools-window__profile-empty">No bodies yet</div>
+                ) : (
+                  bodyItems.map((body) => (
+                    <button
+                      key={body.id}
+                      className={`tools-window__profile-item${
+                        selectedSolidBodyId === body.id
+                          ? " tools-window__profile-item--active"
+                          : ""
+                      }`}
+                      onClick={() => onSelectBody(body.id)}
+                      type="button"
+                    >
+                      <span>{body.name}</span>
+                      <span>Active</span>
+                    </button>
+                  ))
+                )}
+              </div>
+              <div className="tools-window__meta-row">
+                <span>Selected</span>
+                <span>
+                  {selectedSolidBodyId
+                    ? bodyItems.find((body) => body.id === selectedSolidBodyId)?.name ??
+                      "Body"
+                    : "Select body"}
+                </span>
+              </div>
+              <div className="tools-window__meta-row">
+                <span>Mode</span>
+                <span>{moveDragActive ? "Drag Mode" : "Input Mode"}</span>
+              </div>
+              <div className="tools-window__input-grid">
+                <label>
+                  X (mm)
+                  <input
+                    inputMode="decimal"
+                    step={0.1}
+                    type="number"
+                    value={movePositionDraft.x}
+                    onChange={(event) =>
+                      onMovePositionDraftChange("x", event.target.value)
+                    }
+                    disabled={!selectedSolidBodyId}
+                  />
+                </label>
+                <label>
+                  Y (mm)
+                  <input
+                    inputMode="decimal"
+                    step={0.1}
+                    type="number"
+                    value={movePositionDraft.y}
+                    onChange={(event) =>
+                      onMovePositionDraftChange("y", event.target.value)
+                    }
+                    disabled={!selectedSolidBodyId}
+                  />
+                </label>
+                <label>
+                  Z (mm)
+                  <input
+                    inputMode="decimal"
+                    step={0.1}
+                    type="number"
+                    value={movePositionDraft.z}
+                    onChange={(event) =>
+                      onMovePositionDraftChange("z", event.target.value)
+                    }
+                    disabled={!selectedSolidBodyId}
+                  />
+                </label>
+              </div>
+              <div className="tools-window__profile-list">
+                {bodyItems.length <= 1 ? (
+                  <div className="tools-window__profile-empty">
+                    Create another body for center align
+                  </div>
+                ) : (
+                  bodyItems
+                    .filter((body) => body.id !== selectedSolidBodyId)
+                    .map((body) => (
+                      <button
+                        key={body.id}
+                        className={`tools-window__profile-item${
+                          moveReferenceBodyId === body.id
+                            ? " tools-window__profile-item--active"
+                            : ""
+                        }`}
+                        onClick={() =>
+                          onMoveReferenceBodyChange(
+                            moveReferenceBodyId === body.id ? null : body.id
+                          )
+                        }
+                        type="button"
+                      >
+                        <span>{body.name}</span>
+                        <span>Reference</span>
+                      </button>
+                    ))
+                )}
+              </div>
+              <button
+                className="tools-window__action-button"
+                disabled={!selectedSolidBodyId}
+                onClick={onSnapToOrigin}
+                type="button"
+              >
+                Snap to Origin
+              </button>
+              <button
+                className="tools-window__action-button"
+                disabled={!selectedSolidBodyId}
+                onClick={onDropToGround}
+                type="button"
+              >
+                Drop to Ground
+              </button>
+              <button
+                className="tools-window__action-button tools-window__action-button--primary"
+                disabled={!selectedSolidBodyId || !moveReferenceBodyId}
+                onClick={onCenterAlign}
+                type="button"
+              >
+                Center Align
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
     </>
@@ -784,12 +1451,45 @@ export const UndoRedoOverlay = memo(function UndoRedoOverlay({
 export const HistoryWindow = memo(function HistoryWindow({
   collapsed,
   onToggleCollapsed,
+  featureTree,
+  selectedFeatureNode,
+  selectedProfileId,
+  onSelectSketchFeature,
+  onSelectExtrudeFeature,
+  onSelectBooleanFeature,
+  onSelectFeatureProfile,
   historyEntries,
   historyIndex,
   onSelectHistoryIndex,
 }: {
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  featureTree: Array<
+    | {
+        kind: "sketch";
+        id: string;
+        name: string;
+        children: { id: string; name: string }[];
+      }
+    | {
+        kind: "extrude";
+        id: string;
+        name: string;
+        sourceProfileId: string;
+      }
+    | {
+        kind: "boolean";
+        id: string;
+        name: string;
+        operation: BooleanOperation;
+      }
+  >;
+  selectedFeatureNode: { kind: "sketch" | "extrude" | "boolean"; id: string } | null;
+  selectedProfileId: string | null;
+  onSelectSketchFeature: (featureId: string) => void;
+  onSelectExtrudeFeature: (featureId: string) => void;
+  onSelectBooleanFeature: (featureId: string) => void;
+  onSelectFeatureProfile: (profileId: string) => void;
   historyEntries: SceneHistoryEntry[];
   historyIndex: number;
   onSelectHistoryIndex: (index: number) => void;
@@ -822,6 +1522,73 @@ export const HistoryWindow = memo(function HistoryWindow({
         </div>
 
         <div className="history-window__body">
+          <div className="history-window__section-title">Features</div>
+          {featureTree.length === 0 ? (
+            <div className="history-window__empty">No features yet</div>
+          ) : (
+            featureTree.map((feature) =>
+              feature.kind === "sketch" ? (
+                <div key={feature.id} className="history-window__feature-group">
+                  <button
+                    className={`history-window__feature${
+                      selectedFeatureNode?.kind === "sketch" &&
+                      selectedFeatureNode.id === feature.id
+                        ? " history-window__feature--active"
+                        : ""
+                    }`}
+                    onClick={() => onSelectSketchFeature(feature.id)}
+                    type="button"
+                  >
+                    {feature.name}
+                  </button>
+                  {feature.children.map((profile) => (
+                    <button
+                      key={profile.id}
+                      className={`history-window__feature-child${
+                        selectedProfileId === profile.id
+                          ? " history-window__feature-child--active"
+                          : ""
+                      }`}
+                      onClick={() => onSelectFeatureProfile(profile.id)}
+                      type="button"
+                    >
+                      {profile.name}
+                    </button>
+                  ))}
+                </div>
+              ) : feature.kind === "extrude" ? (
+                <button
+                  key={feature.id}
+                  className={`history-window__feature${
+                    selectedFeatureNode?.kind === "extrude" &&
+                    selectedFeatureNode.id === feature.id
+                      ? " history-window__feature--active"
+                      : ""
+                  }`}
+                  onClick={() => onSelectExtrudeFeature(feature.id)}
+                  type="button"
+                >
+                  {feature.name}
+                </button>
+              ) : (
+                <button
+                  key={feature.id}
+                  className={`history-window__feature${
+                    selectedFeatureNode?.kind === "boolean" &&
+                    selectedFeatureNode.id === feature.id
+                      ? " history-window__feature--active"
+                      : ""
+                  }`}
+                  onClick={() => onSelectBooleanFeature(feature.id)}
+                  type="button"
+                >
+                  {feature.name} ({feature.operation})
+                </button>
+              )
+            )
+          )}
+
+          <div className="history-window__section-title">Timeline</div>
           {historyEntries.map((entry, index) => (
             <button
               key={entry.id}

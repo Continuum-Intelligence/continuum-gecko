@@ -7,13 +7,22 @@ export type PieAction = "origin" | "top" | "front" | "right" | "iso";
 export type ViewAction = PieAction | "back" | "left" | "bottom";
 
 export type ToolPieAction = "none" | "createWorkPlane";
-export type SketchTool = "circle" | null;
+export type SketchTool = "circle" | "rectangle" | null;
+export type SketchProfileType = "circle" | "rectangle";
+export type BodyFaceId = "top" | "bottom" | "side";
+export type BooleanOperation = "union" | "subtract" | "intersect";
 
 export type TransformMode = "move" | "rotate" | "scale" | null;
 
 export type TransformAxis = "x" | "y" | "z" | null;
 
 export type Vector3Tuple = [number, number, number];
+
+export type BodyTransform = {
+  position: Vector3Tuple;
+  rotation: Vector3Tuple;
+  scale: Vector3Tuple;
+};
 
 export type SelectableObjectKind = "plane";
 
@@ -49,6 +58,7 @@ export type WorkPlane = {
 export type SketchCircle = {
   id: string;
   name: string;
+  profileType: "circle";
   planeId: string;
   center: [number, number];
   radius: number;
@@ -57,17 +67,81 @@ export type SketchCircle = {
   planeScale: Vector3Tuple;
 };
 
+export type SketchRectangle = {
+  id: string;
+  name: string;
+  profileType: "rectangle";
+  planeId: string;
+  center: [number, number];
+  width: number;
+  height: number;
+  planePosition: Vector3Tuple;
+  planeRotation: Vector3Tuple;
+  planeScale: Vector3Tuple;
+};
+
+export type SketchProfile = SketchCircle | SketchRectangle;
+
+export type MeshGeometryData = {
+  positions: number[];
+  normals: number[];
+  indices: number[];
+};
+
 export type SolidBody = {
   id: string;
   name: string;
-  sourceSketchId: string;
-  radius: number;
+  isVisible?: boolean;
+  sourceSketchId?: string | null;
+  sourceBooleanFeatureId?: string | null;
+  profileType: SketchProfileType | "mesh";
+  radius?: number;
+  width?: number;
+  height?: number;
+  meshData?: MeshGeometryData;
   depth: number;
   direction: 1 | -1;
   center: [number, number];
   planePosition: Vector3Tuple;
   planeRotation: Vector3Tuple;
   planeScale: Vector3Tuple;
+  transform: BodyTransform;
+};
+
+export type CadEntitySelection =
+  | { kind: "profile"; profileId: string }
+  | { kind: "body"; bodyId: string }
+  | { kind: "face"; bodyId: string; faceId: BodyFaceId }
+  | null;
+
+export type SketchFeature = {
+  id: string;
+  name: string;
+  planeId: string;
+  profileIds: string[];
+};
+
+export type ExtrudeFeature = {
+  id: string;
+  name: string;
+  sourceProfileId: string;
+  bodyId: string;
+  depth: number;
+  direction: 1 | -1;
+};
+
+export type BooleanFeature = {
+  id: string;
+  name: string;
+  targetBodyId: string;
+  toolBodyId: string;
+  operation: BooleanOperation;
+  resultBodyId: string;
+};
+
+export type FeatureOrderItem = {
+  kind: "sketch" | "extrude" | "boolean";
+  id: string;
 };
 
 export type SceneSelection = {
@@ -88,7 +162,12 @@ export type DistanceDimension = {
 export type SceneSnapshot = {
   workPlanes: WorkPlane[];
   sketchCircles: SketchCircle[];
+  sketchRectangles: SketchRectangle[];
+  sketchFeatures: SketchFeature[];
   solidBodies: SolidBody[];
+  extrudeFeatures: ExtrudeFeature[];
+  booleanFeatures: BooleanFeature[];
+  featureOrder: FeatureOrderItem[];
   dimensions: DistanceDimension[];
   primarySelection: SceneSelection;
   secondarySelection: SceneSelection;
