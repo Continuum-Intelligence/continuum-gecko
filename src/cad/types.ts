@@ -18,6 +18,12 @@ export type TransformAxis = "x" | "y" | "z" | null;
 
 export type Vector3Tuple = [number, number, number];
 
+export type BodyTransform = {
+  position: Vector3Tuple;
+  rotation: Vector3Tuple;
+  scale: Vector3Tuple;
+};
+
 export type SelectableObjectKind = "plane";
 
 export type SelectionLevel = "object" | "face" | "edge" | "vertex";
@@ -99,6 +105,7 @@ export type SolidBody = {
   planePosition: Vector3Tuple;
   planeRotation: Vector3Tuple;
   planeScale: Vector3Tuple;
+  transform: BodyTransform;
 };
 
 export type CadEntitySelection =

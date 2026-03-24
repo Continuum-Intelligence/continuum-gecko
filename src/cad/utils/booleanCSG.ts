@@ -1,4 +1,7 @@
 import * as THREE from "three";
+import {
+  mergeVertices,
+} from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { BooleanOperation, MeshGeometryData, SolidBody } from "../types";
 
 type CsgVertex = {
@@ -31,6 +34,14 @@ type CsgPolygon = {
 };
 
 const EPSILON = 1e-5;
+
+function getBodyTransform(body: SolidBody) {
+  return body.transform ?? {
+    position: [0, 0, 0] as [number, number, number],
+    rotation: [0, 0, 0] as [number, number, number],
+    scale: [1, 1, 1] as [number, number, number],
+  };
+}
 
 function createVertex(pos: THREE.Vector3, normal: THREE.Vector3): CsgVertex {
   return {
@@ -292,6 +303,87 @@ function geometryFromCsg(polygons: CsgPolygon[]): THREE.BufferGeometry {
   return geometry;
 }
 
+function hashVertex(x: number, y: number, z: number, precision = 1e-5) {
+  const px = Math.round(x / precision);
+  const py = Math.round(y / precision);
+  const pz = Math.round(z / precision);
+  return `${px},${py},${pz}`;
+}
+
+function removeDegenerateAndDuplicateTriangles(
+  geometry: THREE.BufferGeometry
+): THREE.BufferGeometry {
+  const nonIndexed = geometry.index ? geometry.toNonIndexed() : geometry.clone();
+  const positions = nonIndexed.getAttribute("position");
+  const filteredPositions: number[] = [];
+  const seenTriangles = new Set<string>();
+
+  for (let i = 0; i < positions.count; i += 3) {
+    const ax = positions.getX(i);
+    const ay = positions.getY(i);
+    const az = positions.getZ(i);
+    const bx = positions.getX(i + 1);
+    const by = positions.getY(i + 1);
+    const bz = positions.getZ(i + 1);
+    const cx = positions.getX(i + 2);
+    const cy = positions.getY(i + 2);
+    const cz = positions.getZ(i + 2);
+
+    const ab = new THREE.Vector3(bx - ax, by - ay, bz - az);
+    const ac = new THREE.Vector3(cx - ax, cy - ay, cz - az);
+    const area2 = ab.clone().cross(ac).lengthSq();
+    if (area2 < 1e-12) continue;
+
+    const aHash = hashVertex(ax, ay, az);
+    const bHash = hashVertex(bx, by, bz);
+    const cHash = hashVertex(cx, cy, cz);
+    const sortedKey = [aHash, bHash, cHash].sort().join("|");
+    if (seenTriangles.has(sortedKey)) continue;
+    seenTriangles.add(sortedKey);
+
+    filteredPositions.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+  }
+
+  const cleaned = new THREE.BufferGeometry();
+  cleaned.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(filteredPositions, 3)
+  );
+  nonIndexed.dispose();
+  return cleaned;
+}
+
+function snapGeometryVertices(
+  geometry: THREE.BufferGeometry,
+  precision = 1e-5
+): THREE.BufferGeometry {
+  const snapped = geometry.clone();
+  const position = snapped.getAttribute("position");
+  for (let i = 0; i < position.count; i += 1) {
+    const x = Math.round(position.getX(i) / precision) * precision;
+    const y = Math.round(position.getY(i) / precision) * precision;
+    const z = Math.round(position.getZ(i) / precision) * precision;
+    position.setXYZ(i, x, y, z);
+  }
+  position.needsUpdate = true;
+  return snapped;
+}
+
+function cleanBooleanGeometry(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+  const snapped = snapGeometryVertices(geometry, 1e-5);
+  const dedupedTriangles = removeDegenerateAndDuplicateTriangles(snapped);
+  snapped.dispose();
+  const merged = mergeVertices(dedupedTriangles, 1e-5);
+  dedupedTriangles.dispose();
+
+  merged.deleteAttribute("normal");
+  merged.computeVertexNormals();
+  merged.normalizeNormals();
+  merged.computeBoundingBox();
+  merged.computeBoundingSphere();
+  return merged;
+}
+
 function booleanOperation(
   target: THREE.BufferGeometry,
   tool: THREE.BufferGeometry,
@@ -333,6 +425,12 @@ function booleanOperation(
 }
 
 function toBodyMatrix(body: SolidBody): THREE.Matrix4 {
+  const transform = getBodyTransform(body);
+  const worldTransform = new THREE.Matrix4().compose(
+    new THREE.Vector3(...transform.position),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(...transform.rotation)),
+    new THREE.Vector3(...transform.scale)
+  );
   const base = new THREE.Matrix4().compose(
     new THREE.Vector3(...body.planePosition),
     new THREE.Quaternion().setFromEuler(new THREE.Euler(...body.planeRotation)),
@@ -360,7 +458,7 @@ function toBodyMatrix(body: SolidBody): THREE.Matrix4 {
     );
   }
 
-  return base.multiply(local);
+  return worldTransform.multiply(base.multiply(local));
 }
 
 function toBodyGeometry(body: SolidBody): THREE.BufferGeometry | null {
@@ -401,12 +499,19 @@ export function meshDataToGeometry(meshData: MeshGeometryData): THREE.BufferGeom
 }
 
 export function geometryToMeshData(geometry: THREE.BufferGeometry): MeshGeometryData {
-  const nonIndexed = geometry.index ? geometry.toNonIndexed() : geometry.clone();
-  nonIndexed.computeVertexNormals();
-  const positions = Array.from(nonIndexed.getAttribute("position").array as Float32Array);
-  const normals = Array.from(nonIndexed.getAttribute("normal").array as Float32Array);
-  const indices = Array.from({ length: positions.length / 3 }, (_, idx) => idx);
-  nonIndexed.dispose();
+  const serialized = geometry.clone();
+  if (!serialized.getAttribute("normal")) {
+    serialized.computeVertexNormals();
+  }
+  const positions = Array.from(
+    serialized.getAttribute("position").array as Float32Array
+  );
+  const normals = Array.from(serialized.getAttribute("normal").array as Float32Array);
+  const indexAttr = serialized.getIndex();
+  const indices = indexAttr
+    ? Array.from(indexAttr.array as Uint16Array | Uint32Array)
+    : Array.from({ length: positions.length / 3 }, (_, idx) => idx);
+  serialized.dispose();
   return { positions, normals, indices };
 }
 
@@ -421,10 +526,12 @@ export function buildBooleanMeshData(
 
   try {
     const result = booleanOperation(targetGeometry, toolGeometry, operation);
+    const cleanedResult = cleanBooleanGeometry(result);
+    result.dispose();
     targetGeometry.dispose();
     toolGeometry.dispose();
-    const meshData = geometryToMeshData(result);
-    result.dispose();
+    const meshData = geometryToMeshData(cleanedResult);
+    cleanedResult.dispose();
     return meshData.positions.length > 0 ? meshData : null;
   } catch {
     targetGeometry.dispose();

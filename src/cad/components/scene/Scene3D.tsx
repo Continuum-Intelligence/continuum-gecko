@@ -222,6 +222,59 @@ function OriginMarker() {
   );
 }
 
+const ActiveSketchPlaneOverlay = memo(function ActiveSketchPlaneOverlay({
+  plane,
+}: {
+  plane: {
+    id: string;
+    position: Vector3Tuple;
+    rotation: Vector3Tuple;
+    scale: Vector3Tuple;
+    sourceKind?: "workplane" | "face";
+  } | null;
+}) {
+  if (!plane) return null;
+  const planeSize = plane.sourceKind === "face" ? 80 : 120;
+  const half = planeSize / 2;
+  const gridStep = plane.sourceKind === "face" ? 8 : 10;
+  const lines: number[] = [];
+  for (let x = -half; x <= half + 1e-6; x += gridStep) {
+    lines.push(x, -half, 0.002, x, half, 0.002);
+  }
+  for (let y = -half; y <= half + 1e-6; y += gridStep) {
+    lines.push(-half, y, 0.002, half, y, 0.002);
+  }
+
+  return (
+    <group position={plane.position} rotation={plane.rotation} scale={plane.scale}>
+      <mesh renderOrder={6} {...nonSelectableProps}>
+        <planeGeometry args={[planeSize, planeSize]} />
+        <meshBasicMaterial
+          color={plane.sourceKind === "face" ? "#9fc7df" : "#a6d0e8"}
+          transparent
+          opacity={plane.sourceKind === "face" ? 0.12 : 0.08}
+          side={THREE.DoubleSide}
+          depthWrite={false}
+        />
+      </mesh>
+      <lineSegments renderOrder={7} {...nonSelectableProps}>
+        <bufferGeometry>
+          <bufferAttribute
+            attach="attributes-position"
+            args={[new Float32Array(lines), 3]}
+          />
+        </bufferGeometry>
+        <lineBasicMaterial
+          color={plane.sourceKind === "face" ? "#46647a" : "#5d7387"}
+          transparent
+          opacity={0.35}
+          depthWrite={false}
+        />
+      </lineSegments>
+    </group>
+  );
+});
+
 // ============================================
 // SCENE OBJECTS
 // ============================================
@@ -231,12 +284,14 @@ const WorkPlaneMesh = memo(function WorkPlaneMesh({
   primarySelection,
   secondarySelection,
   activePlaneId,
+  selectionEnabled,
   onSelect,
 }: {
   plane: WorkPlane;
   primarySelection: SceneSelection;
   secondarySelection: SceneSelection;
   activePlaneId: string | null;
+  selectionEnabled: boolean;
   onSelect: (selection: SceneSelection, additive: boolean) => void;
 }) {
   const planeGeometry = useMemo(
@@ -296,7 +351,9 @@ const WorkPlaneMesh = memo(function WorkPlaneMesh({
       <mesh
         key={edgeId}
         position={position}
+        {...(!selectionEnabled ? nonSelectableProps : {})}
         onClick={(event) => {
+          if (!selectionEnabled) return;
           event.stopPropagation();
           onSelect(
             createSelection("plane", plane.id, "edge", edgeId),
@@ -323,7 +380,9 @@ const WorkPlaneMesh = memo(function WorkPlaneMesh({
       <mesh
         key={vertexId}
         position={[localPoint.x, localPoint.y, localPoint.z]}
+        {...(!selectionEnabled ? nonSelectableProps : {})}
         onClick={(event) => {
+          if (!selectionEnabled) return;
           event.stopPropagation();
           onSelect(
             createSelection("plane", plane.id, "vertex", vertexId),
@@ -342,7 +401,9 @@ const WorkPlaneMesh = memo(function WorkPlaneMesh({
       <mesh
         position={[0, 0, planeSurfaceZ]}
         renderOrder={1}
+        {...(!selectionEnabled ? nonSelectableProps : {})}
         onClick={(event) => {
+          if (!selectionEnabled) return;
           event.stopPropagation();
           onSelect(
             createSelection("plane", plane.id, "face", WORK_PLANE_FACE_ID),
@@ -436,12 +497,14 @@ const WorkPlanes = memo(function WorkPlanes({
   primarySelection,
   secondarySelection,
   activePlaneId,
+  selectionEnabled,
   onSelect,
 }: {
   workPlanes: WorkPlane[];
   primarySelection: SceneSelection;
   secondarySelection: SceneSelection;
   activePlaneId: string | null;
+  selectionEnabled: boolean;
   onSelect: (selection: SceneSelection, additive: boolean) => void;
 }) {
   return (
@@ -455,6 +518,7 @@ const WorkPlanes = memo(function WorkPlanes({
             primarySelection={primarySelection}
             secondarySelection={secondarySelection}
             activePlaneId={activePlaneId}
+            selectionEnabled={selectionEnabled}
             onSelect={onSelect}
           />
         ))}
@@ -961,6 +1025,86 @@ const BooleanPreviewMesh = memo(function BooleanPreviewMesh({
   );
 });
 
+function buildCadFeatureEdges(
+  geometry: THREE.BufferGeometry,
+  creaseAngleDeg: number
+): THREE.BufferGeometry {
+  const indexed = geometry.index ? geometry : geometry.toNonIndexed();
+  const position = indexed.getAttribute("position");
+  const index = indexed.getIndex();
+  const indices = index
+    ? Array.from(index.array as Uint16Array | Uint32Array)
+    : Array.from({ length: position.count }, (_, i) => i);
+
+  const normal = new THREE.Vector3();
+  const vA = new THREE.Vector3();
+  const vB = new THREE.Vector3();
+  const vC = new THREE.Vector3();
+  const edgeMap = new Map<string, { a: number; b: number; normals: THREE.Vector3[] }>();
+
+  for (let i = 0; i < indices.length; i += 3) {
+    const a = indices[i];
+    const b = indices[i + 1];
+    const c = indices[i + 2];
+
+    vA.fromBufferAttribute(position, a);
+    vB.fromBufferAttribute(position, b);
+    vC.fromBufferAttribute(position, c);
+    normal.copy(vC).sub(vB).cross(vA.clone().sub(vB));
+    if (normal.lengthSq() < 1e-14) continue;
+    normal.normalize();
+
+    const triEdges: Array<[number, number]> = [
+      [a, b],
+      [b, c],
+      [c, a],
+    ];
+    for (const [s, t] of triEdges) {
+      const min = Math.min(s, t);
+      const max = Math.max(s, t);
+      const key = `${min}_${max}`;
+      const existing = edgeMap.get(key);
+      if (existing) {
+        existing.normals.push(normal.clone());
+      } else {
+        edgeMap.set(key, { a: min, b: max, normals: [normal.clone()] });
+      }
+    }
+  }
+
+  const thresholdDot = Math.cos(THREE.MathUtils.degToRad(creaseAngleDeg));
+  const linePositions: number[] = [];
+
+  edgeMap.forEach((entry) => {
+    const normals = entry.normals;
+    let isFeature = false;
+    if (normals.length === 1) {
+      isFeature = true;
+    } else {
+      let minDot = 1;
+      for (let i = 0; i < normals.length; i += 1) {
+        for (let j = i + 1; j < normals.length; j += 1) {
+          minDot = Math.min(minDot, normals[i].dot(normals[j]));
+        }
+      }
+      if (minDot < thresholdDot) isFeature = true;
+    }
+    if (!isFeature) return;
+
+    vA.fromBufferAttribute(position, entry.a);
+    vB.fromBufferAttribute(position, entry.b);
+    linePositions.push(vA.x, vA.y, vA.z, vB.x, vB.y, vB.z);
+  });
+
+  const edgeGeometry = new THREE.BufferGeometry();
+  edgeGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(linePositions, 3)
+  );
+  if (!geometry.index) indexed.dispose();
+  return edgeGeometry;
+}
+
 const SolidBodyMesh = memo(function SolidBodyMesh({
   body,
   selected,
@@ -976,6 +1120,11 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
   onSelectSolidBody: (id: string | null) => void;
   onSelectSolidFace: (bodyId: string, faceId: BodyFaceId) => void;
 }) {
+  const bodyTransform = body.transform ?? {
+    position: [0, 0, 0] as Vector3Tuple,
+    rotation: [0, 0, 0] as Vector3Tuple,
+    scale: [1, 1, 1] as Vector3Tuple,
+  };
   const sideGeometry = useMemo(() => {
     if (body.profileType === "mesh" && body.meshData) {
       return meshDataToGeometry(body.meshData);
@@ -1004,7 +1153,12 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
     const radius = Math.max(0.1, body.radius ?? 0.1);
     return new THREE.CylinderGeometry(radius, radius, body.depth, 64);
   }, [body.depth, body.height, body.profileType, body.radius, body.width]);
-  const edgeGeometry = useMemo(() => new THREE.EdgesGeometry(capGeometry), [capGeometry]);
+  const edgeGeometry = useMemo(() => {
+    if (body.profileType === "mesh") {
+      return buildCadFeatureEdges(capGeometry, 55);
+    }
+    return new THREE.EdgesGeometry(capGeometry, 18);
+  }, [body.profileType, capGeometry]);
 
   useEffect(
     () => () => {
@@ -1017,131 +1171,149 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
 
   return (
     <group
-      position={body.planePosition}
-      rotation={body.planeRotation}
-      scale={body.planeScale}
+      position={bodyTransform.position}
+      rotation={bodyTransform.rotation}
+      scale={bodyTransform.scale}
     >
-      <mesh
-        position={
-          body.profileType === "mesh"
-            ? [0, 0, 0]
-            : [body.center[0], body.center[1], ((body.direction ?? 1) * body.depth) / 2]
-        }
-        rotation={body.profileType === "circle" ? [Math.PI / 2, 0, 0] : [0, 0, 0]}
-        userData={{ [EXPORTABLE_GEOMETRY_FLAG]: true }}
-        onClick={(event) => {
-          event.stopPropagation();
-          onSelectSolidBody(body.id);
-        }}
-        onDoubleClick={(event) => {
-          event.stopPropagation();
-          onSelectSolidFace(body.id, "side");
-        }}
+      <group
+        position={body.planePosition}
+        rotation={body.planeRotation}
+        scale={body.planeScale}
       >
-        <primitive attach="geometry" object={sideGeometry} />
-        <meshStandardMaterial
-          color={
-            selectedFaceId === "side"
-              ? "#eef4fc"
-              : booleanRole === "base"
-                ? "#dbeafe"
+        <mesh
+          position={
+            body.profileType === "mesh"
+              ? [0, 0, 0]
+              : [body.center[0], body.center[1], ((body.direction ?? 1) * body.depth) / 2]
+          }
+          rotation={body.profileType === "circle" ? [Math.PI / 2, 0, 0] : [0, 0, 0]}
+          userData={{ [EXPORTABLE_GEOMETRY_FLAG]: true }}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelectSolidBody(body.id);
+          }}
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            onSelectSolidFace(body.id, "side");
+          }}
+        >
+          <primitive attach="geometry" object={sideGeometry} />
+          <meshStandardMaterial
+            color={
+              selectedFaceId === "side"
+                ? "#eef4fc"
+                : booleanRole === "base"
+                  ? "#dbeafe"
+                  : booleanRole === "tool"
+                    ? "#fee2e2"
+                    : selected
+                      ? "#dbe4f0"
+                      : "#b8c3d2"
+            }
+            metalness={0.12}
+            roughness={0.28}
+          />
+        </mesh>
+        {body.profileType !== "mesh" ? (
+          <>
+            <mesh
+              position={[
+                body.center[0],
+                body.center[1],
+                (body.direction ?? 1) * body.depth + 0.01,
+              ]}
+              userData={{ [EXPORTABLE_GEOMETRY_FLAG]: true }}
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelectSolidFace(body.id, "top");
+              }}
+            >
+              {body.profileType === "rectangle" ? (
+                <planeGeometry
+                  args={[
+                    Math.max(0.1, (body.width ?? 0.1) * 0.985),
+                    Math.max(0.1, (body.height ?? 0.1) * 0.985),
+                  ]}
+                />
+              ) : (
+                <circleGeometry args={[Math.max(0.1, (body.radius ?? 0.1) * 0.985), 64]} />
+              )}
+              <meshStandardMaterial
+                color={
+                  selectedFaceId === "top" ? "#f2f7ff" : selected ? "#e5ecf5" : "#cfd8e4"
+                }
+                metalness={0.08}
+                roughness={0.3}
+                side={THREE.DoubleSide}
+              />
+            </mesh>
+            <mesh
+              position={[body.center[0], body.center[1], 0.01]}
+              rotation={[Math.PI, 0, 0]}
+              userData={{ [EXPORTABLE_GEOMETRY_FLAG]: true }}
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelectSolidFace(body.id, "bottom");
+              }}
+            >
+              {body.profileType === "rectangle" ? (
+                <planeGeometry
+                  args={[
+                    Math.max(0.1, (body.width ?? 0.1) * 0.985),
+                    Math.max(0.1, (body.height ?? 0.1) * 0.985),
+                  ]}
+                />
+              ) : (
+                <circleGeometry args={[Math.max(0.1, (body.radius ?? 0.1) * 0.985), 64]} />
+              )}
+              <meshStandardMaterial
+                color={
+                  selectedFaceId === "bottom"
+                    ? "#f2f7ff"
+                    : selected
+                      ? "#dce4ef"
+                      : "#c5cfdd"
+                }
+                metalness={0.08}
+                roughness={0.34}
+                side={THREE.DoubleSide}
+              />
+            </mesh>
+          </>
+        ) : null}
+        <lineSegments
+          position={
+            body.profileType === "mesh"
+              ? [0, 0, 0]
+              : [body.center[0], body.center[1], ((body.direction ?? 1) * body.depth) / 2]
+          }
+          rotation={body.profileType === "circle" ? [Math.PI / 2, 0, 0] : [0, 0, 0]}
+          geometry={edgeGeometry}
+          {...nonSelectableProps}
+        >
+          <lineBasicMaterial
+            color={
+              booleanRole === "base"
+                ? "#1d4ed8"
                 : booleanRole === "tool"
-                  ? "#fee2e2"
-                  : selected
-                    ? "#dbe4f0"
-                    : "#b8c3d2"
-          }
-          metalness={0.12}
-          roughness={0.28}
-        />
-      </mesh>
-      {body.profileType !== "mesh" ? (
-        <>
-          <mesh
-            position={[
-              body.center[0],
-              body.center[1],
-              (body.direction ?? 1) * body.depth + 0.01,
-            ]}
-            userData={{ [EXPORTABLE_GEOMETRY_FLAG]: true }}
-            onClick={(event) => {
-              event.stopPropagation();
-              onSelectSolidFace(body.id, "top");
-            }}
-          >
-            {body.profileType === "rectangle" ? (
-              <planeGeometry
-                args={[
-                  Math.max(0.1, (body.width ?? 0.1) * 0.985),
-                  Math.max(0.1, (body.height ?? 0.1) * 0.985),
-                ]}
-              />
-            ) : (
-              <circleGeometry args={[Math.max(0.1, (body.radius ?? 0.1) * 0.985), 64]} />
-            )}
-            <meshStandardMaterial
-              color={selectedFaceId === "top" ? "#f2f7ff" : selected ? "#e5ecf5" : "#cfd8e4"}
-              metalness={0.08}
-              roughness={0.3}
-              side={THREE.DoubleSide}
-            />
-          </mesh>
-          <mesh
-            position={[
-              body.center[0],
-              body.center[1],
-              0.01,
-            ]}
-            rotation={[Math.PI, 0, 0]}
-            userData={{ [EXPORTABLE_GEOMETRY_FLAG]: true }}
-            onClick={(event) => {
-              event.stopPropagation();
-              onSelectSolidFace(body.id, "bottom");
-            }}
-          >
-            {body.profileType === "rectangle" ? (
-              <planeGeometry
-                args={[
-                  Math.max(0.1, (body.width ?? 0.1) * 0.985),
-                  Math.max(0.1, (body.height ?? 0.1) * 0.985),
-                ]}
-              />
-            ) : (
-              <circleGeometry args={[Math.max(0.1, (body.radius ?? 0.1) * 0.985), 64]} />
-            )}
-            <meshStandardMaterial
-              color={selectedFaceId === "bottom" ? "#f2f7ff" : selected ? "#dce4ef" : "#c5cfdd"}
-              metalness={0.08}
-              roughness={0.34}
-              side={THREE.DoubleSide}
-            />
-          </mesh>
-        </>
-      ) : null}
-      <lineSegments
-        position={
-          body.profileType === "mesh"
-            ? [0, 0, 0]
-            : [body.center[0], body.center[1], ((body.direction ?? 1) * body.depth) / 2]
-        }
-        rotation={body.profileType === "circle" ? [Math.PI / 2, 0, 0] : [0, 0, 0]}
-        geometry={edgeGeometry}
-        {...nonSelectableProps}
-      >
-        <lineBasicMaterial
-          color={
-            booleanRole === "base"
-              ? "#1d4ed8"
-              : booleanRole === "tool"
-                ? "#b91c1c"
-                : selected || selectedFaceId
-                  ? "#0f172a"
-                  : "#334155"
-          }
-          transparent
-          opacity={selected || selectedFaceId ? 0.68 : 0.52}
-        />
-      </lineSegments>
+                  ? "#b91c1c"
+                  : selected || selectedFaceId
+                    ? "#0f172a"
+                    : body.profileType === "mesh"
+                      ? "#1f2937"
+                      : "#334155"
+            }
+            transparent
+            opacity={
+              selected || selectedFaceId
+                ? 0.72
+                : body.profileType === "mesh"
+                  ? 0.58
+                  : 0.52
+            }
+          />
+        </lineSegments>
+      </group>
     </group>
   );
 });
@@ -1381,6 +1553,7 @@ function SketchPlaneInteraction({
     position: Vector3Tuple;
     rotation: Vector3Tuple;
     scale: Vector3Tuple;
+    sourceKind?: "workplane" | "face";
   } | null;
   onPointerDown: (
     localPoint: [number, number],
@@ -1814,6 +1987,108 @@ function TransformGizmo({
   );
 }
 
+function getSolidBodyTransform(body: SolidBody) {
+  return body.transform ?? {
+    position: [0, 0, 0] as Vector3Tuple,
+    rotation: [0, 0, 0] as Vector3Tuple,
+    scale: [1, 1, 1] as Vector3Tuple,
+  };
+}
+
+function buildSolidBodyMatrix(body: SolidBody) {
+  const transform = getSolidBodyTransform(body);
+  const transformMatrix = new THREE.Matrix4().compose(
+    new THREE.Vector3(...transform.position),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(...transform.rotation)),
+    new THREE.Vector3(...transform.scale)
+  );
+  const planeMatrix = new THREE.Matrix4().compose(
+    new THREE.Vector3(...body.planePosition),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(...body.planeRotation)),
+    new THREE.Vector3(...body.planeScale)
+  );
+  const localMatrix = new THREE.Matrix4();
+  if (body.profileType === "circle") {
+    localMatrix.makeTranslation(
+      body.center[0],
+      body.center[1],
+      ((body.direction ?? 1) * body.depth) / 2
+    );
+  } else if (body.profileType === "rectangle") {
+    localMatrix.makeTranslation(
+      body.center[0],
+      body.center[1],
+      ((body.direction ?? 1) * body.depth) / 2
+    );
+  } else {
+    localMatrix.identity();
+  }
+  return transformMatrix.multiply(planeMatrix.multiply(localMatrix));
+}
+
+function getBodyGizmoTarget(body: SolidBody) {
+  if (body.profileType === "mesh" && body.meshData) {
+    const geometry = meshDataToGeometry(body.meshData);
+    geometry.applyMatrix4(buildSolidBodyMatrix(body));
+    geometry.computeBoundingBox();
+    const center = geometry.boundingBox
+      ? geometry.boundingBox.getCenter(new THREE.Vector3())
+      : new THREE.Vector3();
+    geometry.dispose();
+    return [center.x, center.y, center.z] as Vector3Tuple;
+  }
+
+  const localCenter = new THREE.Vector3(
+    body.center[0],
+    body.center[1],
+    ((body.direction ?? 1) * body.depth) / 2
+  );
+  localCenter.applyMatrix4(buildSolidBodyMatrix(body));
+  return [localCenter.x, localCenter.y, localCenter.z] as Vector3Tuple;
+}
+
+function BodyMoveGizmo({
+  target,
+  hoveredAxis,
+  activeAxis,
+  onHoverAxis,
+  onAxisPointerDown,
+}: {
+  target: Vector3Tuple | null;
+  hoveredAxis: TransformAxis;
+  activeAxis: TransformAxis;
+  onHoverAxis: (axis: TransformAxis) => void;
+  onAxisPointerDown: (
+    axis: Exclude<TransformAxis, null>,
+    event: ThreeEvent<PointerEvent>
+  ) => void;
+}) {
+  const { camera } = useThree();
+  const gizmoRef = useRef<THREE.Group | null>(null);
+
+  useFrame(() => {
+    if (!gizmoRef.current || !target) return;
+    const distance = camera.position.distanceTo(
+      new THREE.Vector3(target[0], target[1], target[2])
+    );
+    const scale = Math.max(0.06, distance * 0.085);
+    gizmoRef.current.scale.setScalar(scale);
+  });
+
+  if (!target) return null;
+
+  return (
+    <group ref={gizmoRef} position={target}>
+      <MoveGizmo
+        hoveredAxis={hoveredAxis}
+        activeAxis={activeAxis}
+        onHoverAxis={onHoverAxis}
+        onAxisPointerDown={onAxisPointerDown}
+      />
+    </group>
+  );
+}
+
 // ============================================
 // OVERLAY PROJECTION BRIDGE
 // ============================================
@@ -1877,6 +2152,7 @@ export const Scene3D = memo(function Scene3D({
   dimensions,
   primarySelection,
   secondarySelection,
+  planeSelectionEnabled,
   onSelectObject,
   onSelectSketchCircle,
   onSelectSolidBody,
@@ -1887,6 +2163,12 @@ export const Scene3D = memo(function Scene3D({
   onExtrudePreviewDepthChange,
   onConfirmExtrudePreview,
   onCancelExtrudePreview,
+  moveModeActive,
+  moveDragActive,
+  moveHoveredAxis,
+  moveGizmoTargetBodyId,
+  onMoveHoverAxis,
+  onMoveAxisPointerDown,
   onDimensionOverlayChange,
   transformMode,
   transformTarget,
@@ -1952,10 +2234,12 @@ export const Scene3D = memo(function Scene3D({
     position: Vector3Tuple;
     rotation: Vector3Tuple;
     scale: Vector3Tuple;
+    sourceKind?: "workplane" | "face";
   } | null;
   dimensions: DistanceDimension[];
   primarySelection: SceneSelection;
   secondarySelection: SceneSelection;
+  planeSelectionEnabled: boolean;
   onSelectObject: (selection: SceneSelection, additive: boolean) => void;
   onSelectSketchCircle: (id: string | null) => void;
   onSelectSolidBody: (id: string | null) => void;
@@ -1974,6 +2258,15 @@ export const Scene3D = memo(function Scene3D({
   onExtrudePreviewDepthChange: (signedDepth: number) => void;
   onConfirmExtrudePreview: () => void;
   onCancelExtrudePreview: () => void;
+  moveModeActive: boolean;
+  moveDragActive: boolean;
+  moveHoveredAxis: TransformAxis;
+  moveGizmoTargetBodyId: string | null;
+  onMoveHoverAxis: (axis: TransformAxis) => void;
+  onMoveAxisPointerDown: (
+    axis: Exclude<TransformAxis, null>,
+    event: ThreeEvent<PointerEvent>
+  ) => void;
   onDimensionOverlayChange: (items: DimensionOverlayItem[]) => void;
   transformMode: TransformMode;
   transformTarget: TransformTarget | null;
@@ -1986,6 +2279,13 @@ export const Scene3D = memo(function Scene3D({
   ) => void;
   exportRootRef: React.RefObject<THREE.Group | null>;
 }) {
+  const moveGizmoTarget = useMemo(() => {
+    if (!moveModeActive || !moveGizmoTargetBodyId) return null;
+    const body = solidBodies.find((item) => item.id === moveGizmoTargetBodyId);
+    if (!body) return null;
+    return getBodyGizmoTarget(body);
+  }, [moveGizmoTargetBodyId, moveModeActive, solidBodies]);
+
   return (
     <Canvas
       camera={{ position: [5, -5, 5], fov: 50, near: 0.1, far: 1000 }}
@@ -2017,9 +2317,11 @@ export const Scene3D = memo(function Scene3D({
         primarySelection={primarySelection}
         secondarySelection={secondarySelection}
         activePlaneId={activeSketchPlane?.id ?? null}
+        selectionEnabled={planeSelectionEnabled}
         onSelect={onSelectObject}
       />
       <PlaneSketches workPlanes={workPlanes} planeSketches={planeSketches} />
+      <ActiveSketchPlaneOverlay plane={activeSketchPlane} />
       <SketchPlaneInteraction
         sketchModeActive={sketchModeActive}
         activeSketchPlane={activeSketchPlane}
@@ -2071,13 +2373,22 @@ export const Scene3D = memo(function Scene3D({
         onHoverAxis={onHoverTransformAxis}
         onAxisPointerDown={onTransformAxisPointerDown}
       />
+      {moveModeActive ? (
+        <BodyMoveGizmo
+          target={moveGizmoTarget}
+          hoveredAxis={moveHoveredAxis}
+          activeAxis={moveDragActive ? moveHoveredAxis : null}
+          onHoverAxis={onMoveHoverAxis}
+          onAxisPointerDown={onMoveAxisPointerDown}
+        />
+      ) : null}
       <BaseGrid />
       <Axes />
       <OriginMarker />
       <OrbitControls
         ref={controlsRef}
         target={[0, 0, 0]}
-        enabled={!transformDragState && extrudePreview === null}
+        enabled={!transformDragState && extrudePreview === null && !moveDragActive}
       />
     </Canvas>
   );

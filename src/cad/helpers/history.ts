@@ -76,6 +76,18 @@ export function cloneSolidBody(body: SolidBody): SolidBody {
     planePosition: [...body.planePosition],
     planeRotation: [...body.planeRotation],
     planeScale: [...body.planeScale],
+    transform: {
+      position: [...body.transform.position],
+      rotation: [...body.transform.rotation],
+      scale: [...body.transform.scale],
+    },
+    meshData: body.meshData
+      ? {
+          positions: [...body.meshData.positions],
+          normals: [...body.meshData.normals],
+          indices: [...body.meshData.indices],
+        }
+      : undefined,
   };
 }
 

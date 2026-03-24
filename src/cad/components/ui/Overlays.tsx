@@ -294,6 +294,22 @@ export const InspectorWindow = memo(function InspectorWindow({
   transformMode,
   onSetTransformMode,
   selectedPlane,
+  selectedEntityType,
+  selectedEntityLabel,
+  bodyPositionDraft,
+  onBodyPositionDraftChange,
+  onSnapBodyToOrigin,
+  onDropBodyToGround,
+  onCenterAlignBodies,
+  canCenterAlignBodies,
+  activeSketchPlaneName,
+  sketchPlaneSelectionMode,
+  onToggleSketchPlaneSelectionMode,
+  selectedSketchProfileType,
+  radiusDraft,
+  diameterDraft,
+  widthDraft,
+  heightDraft,
 }: {
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -319,13 +335,29 @@ export const InspectorWindow = memo(function InspectorWindow({
   transformMode: TransformMode;
   onSetTransformMode: (mode: TransformMode) => void;
   selectedPlane: WorkPlane | null;
+  selectedEntityType: "none" | "body" | "plane" | "profile" | "face";
+  selectedEntityLabel: string;
+  bodyPositionDraft: { x: string; y: string; z: string };
+  onBodyPositionDraftChange: (axis: "x" | "y" | "z", value: string) => void;
+  onSnapBodyToOrigin: () => void;
+  onDropBodyToGround: () => void;
+  onCenterAlignBodies: () => void;
+  canCenterAlignBodies: boolean;
+  activeSketchPlaneName: string;
+  sketchPlaneSelectionMode: boolean;
+  onToggleSketchPlaneSelectionMode: () => void;
+  selectedSketchProfileType: "circle" | "rectangle" | null;
+  radiusDraft: string;
+  diameterDraft: string;
+  widthDraft: string;
+  heightDraft: string;
 }) {
   const modeButtons = [
     { mode: "move", label: "Move" },
     { mode: "rotate", label: "Rotate" },
     { mode: "scale", label: "Scale" },
   ] as const;
-  const hasSelection = !!primarySelection && !!transformTarget;
+  const hasSelection = !!transformTarget;
   const formatValue = (value: number) => value.toFixed(1);
 
   const renderTransformValueCard = (
@@ -401,10 +433,12 @@ export const InspectorWindow = memo(function InspectorWindow({
               <div
                 className="inspector-window__title"
                 onDoubleClick={() => {
-                  if (selectedObjectName) onStartRenaming();
+                  if (selectedObjectName && selectedEntityType === "plane") {
+                    onStartRenaming();
+                  }
                 }}
               >
-                {selectedObjectName ?? "No Selection"}
+                {selectedObjectName ?? selectedEntityLabel}
               </div>
             )}
           </div>
@@ -420,39 +454,14 @@ export const InspectorWindow = memo(function InspectorWindow({
 
         <div className="inspector-window__body">
           <div className="inspector-window__section">
-            <div className="inspector-window__section-title">Transform</div>
-            <div className="inspector-window__mode-row">
-              {modeButtons.map((button) => (
-                <button
-                  key={button.mode}
-                  className={`inspector-window__mode-button${
-                    transformMode === button.mode
-                      ? " inspector-window__mode-button--active"
-                      : ""
-                  }`}
-                  disabled={!hasSelection}
-                  onClick={() =>
-                    onSetTransformMode(
-                      transformMode === button.mode ? null : button.mode
-                    )
-                  }
-                  type="button"
-                >
-                  {button.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="inspector-window__section">
             <div className="inspector-window__section-title">Selection</div>
             <div className="inspector-window__meta-row">
-              <span>Type</span>
-              <span>{primarySelection?.objectKind ?? "None"}</span>
+              <span>Selected</span>
+              <span>{selectedEntityLabel}</span>
             </div>
             <div className="inspector-window__meta-row">
-              <span>Level</span>
-              <span>{primarySelection?.selectionLevel ?? "None"}</span>
+              <span>Type</span>
+              <span>{selectedEntityType}</span>
             </div>
             <div className="inspector-window__meta-row">
               <span>Primary</span>
@@ -462,42 +471,166 @@ export const InspectorWindow = memo(function InspectorWindow({
               <span>Secondary</span>
               <span>{formatSelectionLevel(secondarySelection)}</span>
             </div>
-            <div className="inspector-window__meta-row">
-              <span>Mode</span>
-              <span>{transformMode ?? "None"}</span>
-            </div>
-            <div className="inspector-window__meta-row">
-              <span>Hint</span>
-              <span>Shift+Select, then D</span>
-            </div>
           </div>
 
-          <div className="inspector-window__section">
-            <div className="inspector-window__section-title">Position</div>
-            <div className="inspector-window__grid">
-              {renderTransformValueCard("position", "x", transformTarget ? transformTarget.position[0] : null)}
-              {renderTransformValueCard("position", "y", transformTarget ? transformTarget.position[1] : null)}
-              {renderTransformValueCard("position", "z", transformTarget ? transformTarget.position[2] : null)}
-            </div>
-          </div>
+          {selectedEntityType === "body" ? (
+            <>
+              <div className="inspector-window__section">
+                <div className="inspector-window__section-title">Transform</div>
+                <div className="inspector-window__mode-row">
+                  <button
+                    className="inspector-window__mode-button inspector-window__mode-button--active"
+                    type="button"
+                  >
+                    Move
+                  </button>
+                  <button className="inspector-window__mode-button" disabled type="button">
+                    Rotate
+                  </button>
+                  <button className="inspector-window__mode-button" disabled type="button">
+                    Scale
+                  </button>
+                </div>
+              </div>
+              <div className="inspector-window__section">
+                <div className="inspector-window__section-title">Position (mm)</div>
+                <div className="tools-window__input-grid">
+                  <label>
+                    X
+                    <input
+                      inputMode="decimal"
+                      type="number"
+                      value={bodyPositionDraft.x}
+                      onChange={(event) =>
+                        onBodyPositionDraftChange("x", event.target.value)
+                      }
+                    />
+                  </label>
+                  <label>
+                    Y
+                    <input
+                      inputMode="decimal"
+                      type="number"
+                      value={bodyPositionDraft.y}
+                      onChange={(event) =>
+                        onBodyPositionDraftChange("y", event.target.value)
+                      }
+                    />
+                  </label>
+                  <label>
+                    Z
+                    <input
+                      inputMode="decimal"
+                      type="number"
+                      value={bodyPositionDraft.z}
+                      onChange={(event) =>
+                        onBodyPositionDraftChange("z", event.target.value)
+                      }
+                    />
+                  </label>
+                </div>
+                <button className="tools-window__action-button" onClick={onSnapBodyToOrigin} type="button">
+                  Snap to Origin
+                </button>
+                <button className="tools-window__action-button" onClick={onDropBodyToGround} type="button">
+                  Drop to Ground
+                </button>
+                <button
+                  className="tools-window__action-button tools-window__action-button--primary"
+                  disabled={!canCenterAlignBodies}
+                  onClick={onCenterAlignBodies}
+                  type="button"
+                >
+                  Center Align
+                </button>
+              </div>
+            </>
+          ) : null}
 
-          <div className="inspector-window__section">
-            <div className="inspector-window__section-title">Rotation</div>
-            <div className="inspector-window__grid">
-              {renderTransformValueCard("rotation", "x", transformTarget ? transformTarget.rotation[0] : null)}
-              {renderTransformValueCard("rotation", "y", transformTarget ? transformTarget.rotation[1] : null)}
-              {renderTransformValueCard("rotation", "z", transformTarget ? transformTarget.rotation[2] : null)}
+          {selectedEntityType === "plane" || selectedEntityType === "face" ? (
+            <div className="inspector-window__section">
+              <div className="inspector-window__section-title">Sketch Context</div>
+              <div className="inspector-window__meta-row">
+                <span>Active Sketch Plane</span>
+                <span>{activeSketchPlaneName}</span>
+              </div>
+              <button
+                className={`tools-window__action-button${
+                  sketchPlaneSelectionMode ? " tools-window__action-button--active" : ""
+                }`}
+                onClick={onToggleSketchPlaneSelectionMode}
+                type="button"
+              >
+                {sketchPlaneSelectionMode ? "Cancel Plane Pick" : "Set Active Sketch Plane"}
+              </button>
             </div>
-          </div>
+          ) : null}
 
-          <div className="inspector-window__section">
-            <div className="inspector-window__section-title">Scale</div>
-            <div className="inspector-window__grid">
-              {renderTransformValueCard("scale", "x", transformTarget ? transformTarget.scale[0] : null)}
-              {renderTransformValueCard("scale", "y", transformTarget ? transformTarget.scale[1] : null)}
-              {renderTransformValueCard("scale", "z", transformTarget ? transformTarget.scale[2] : null)}
+          {selectedEntityType === "profile" ? (
+            <div className="inspector-window__section">
+              <div className="inspector-window__section-title">Profile Dimensions (mm)</div>
+              {selectedSketchProfileType === "circle" ? (
+                <>
+                  <div className="inspector-window__meta-row">
+                    <span>Radius</span>
+                    <span>{radiusDraft || "--"}</span>
+                  </div>
+                  <div className="inspector-window__meta-row">
+                    <span>Diameter</span>
+                    <span>{diameterDraft || "--"}</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="inspector-window__meta-row">
+                    <span>Width</span>
+                    <span>{widthDraft || "--"}</span>
+                  </div>
+                  <div className="inspector-window__meta-row">
+                    <span>Height</span>
+                    <span>{heightDraft || "--"}</span>
+                  </div>
+                </>
+              )}
             </div>
-          </div>
+          ) : null}
+
+          {selectedEntityType === "plane" ? (
+            <>
+              <div className="inspector-window__section">
+                <div className="inspector-window__section-title">Transform</div>
+                <div className="inspector-window__mode-row">
+                  {modeButtons.map((button) => (
+                    <button
+                      key={button.mode}
+                      className={`inspector-window__mode-button${
+                        transformMode === button.mode
+                          ? " inspector-window__mode-button--active"
+                          : ""
+                      }`}
+                      disabled={!hasSelection}
+                      onClick={() =>
+                        onSetTransformMode(
+                          transformMode === button.mode ? null : button.mode
+                        )
+                      }
+                      type="button"
+                    >
+                      {button.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="inspector-window__section">
+                <div className="inspector-window__section-title">Position</div>
+                <div className="inspector-window__grid">
+                  {renderTransformValueCard("position", "x", transformTarget ? transformTarget.position[0] : null)}
+                  {renderTransformValueCard("position", "y", transformTarget ? transformTarget.position[1] : null)}
+                  {renderTransformValueCard("position", "z", transformTarget ? transformTarget.position[2] : null)}
+                </div>
+              </div>
+            </>
+          ) : null}
         </div>
       </div>
     </>
@@ -519,8 +652,11 @@ export const ToolsWindow = memo(function ToolsWindow({
   onOpenSketchFlow,
   onOpenExtrudeFlow,
   onOpenBooleanFlow,
+  onOpenMoveFlow,
   onBackToToolsFlow,
   onDoneSketchFlow,
+  sketchPlaneSelectionMode,
+  onToggleSketchPlaneSelectionMode,
   sketchModeActive,
   onSetSketchModeActive,
   activeSketchPlaneName,
@@ -566,15 +702,26 @@ export const ToolsWindow = memo(function ToolsWindow({
   booleanBaseBodyName,
   booleanToolBodyName,
   booleanPreviewReady,
+  movePositionDraft,
+  onMovePositionDraftChange,
+  onSnapToOrigin,
+  onDropToGround,
+  onCenterAlign,
+  moveReferenceBodyId,
+  onMoveReferenceBodyChange,
+  moveDragActive,
 }: {
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  toolsFlow: "home" | "sketch" | "extrude" | "boolean";
+  toolsFlow: "home" | "sketch" | "extrude" | "boolean" | "move";
   onOpenSketchFlow: () => void;
   onOpenExtrudeFlow: () => void;
   onOpenBooleanFlow: () => void;
+  onOpenMoveFlow: () => void;
   onBackToToolsFlow: () => void;
   onDoneSketchFlow: () => void;
+  sketchPlaneSelectionMode: boolean;
+  onToggleSketchPlaneSelectionMode: () => void;
   sketchModeActive: boolean;
   onSetSketchModeActive: (active: boolean) => void;
   activeSketchPlaneName: string;
@@ -625,6 +772,14 @@ export const ToolsWindow = memo(function ToolsWindow({
   booleanBaseBodyName: string | null;
   booleanToolBodyName: string | null;
   booleanPreviewReady: boolean;
+  movePositionDraft: { x: string; y: string; z: string };
+  onMovePositionDraftChange: (axis: "x" | "y" | "z", value: string) => void;
+  onSnapToOrigin: () => void;
+  onDropToGround: () => void;
+  onCenterAlign: () => void;
+  moveReferenceBodyId: string | null;
+  onMoveReferenceBodyChange: (id: string | null) => void;
+  moveDragActive: boolean;
 }) {
   return (
     <>
@@ -691,6 +846,13 @@ export const ToolsWindow = memo(function ToolsWindow({
                 Boolean
               </button>
               <button
+                className="tools-window__action-button tools-window__action-button--primary"
+                onClick={onOpenMoveFlow}
+                type="button"
+              >
+                Move
+              </button>
+              <button
                 className="tools-window__action-button"
                 disabled={!canExportStl}
                 onClick={onExportStl}
@@ -717,6 +879,22 @@ export const ToolsWindow = memo(function ToolsWindow({
                 <span>Plane</span>
                 <span>{activeSketchPlaneName}</span>
               </div>
+              <button
+                className={`tools-window__action-button${
+                  sketchPlaneSelectionMode
+                    ? " tools-window__action-button--active"
+                    : ""
+                }`}
+                onClick={onToggleSketchPlaneSelectionMode}
+                type="button"
+              >
+                {sketchPlaneSelectionMode ? "Cancel Plane Pick" : "Select Plane"}
+              </button>
+              {sketchPlaneSelectionMode ? (
+                <div className="tools-window__hint">
+                  Click a work plane or solid face in the viewport.
+                </div>
+              ) : null}
               {!canSketch ? (
                 <div className="tools-window__hint">Select a plane</div>
               ) : null}
@@ -724,7 +902,7 @@ export const ToolsWindow = memo(function ToolsWindow({
                 className={`tools-window__action-button${
                   sketchModeActive ? " tools-window__action-button--active" : ""
                 }`}
-                disabled={!canSketch}
+                disabled={!canSketch || sketchPlaneSelectionMode}
                 onClick={() => onSetSketchModeActive(!sketchModeActive)}
                 type="button"
               >
@@ -736,7 +914,7 @@ export const ToolsWindow = memo(function ToolsWindow({
                     ? " tools-window__action-button--active"
                     : ""
                 }`}
-                disabled={!sketchModeActive}
+                disabled={!sketchModeActive || sketchPlaneSelectionMode}
                 onClick={onActivateCircleTool}
                 type="button"
               >
@@ -748,7 +926,7 @@ export const ToolsWindow = memo(function ToolsWindow({
                     ? " tools-window__action-button--active"
                     : ""
                 }`}
-                disabled={!sketchModeActive}
+                disabled={!sketchModeActive || sketchPlaneSelectionMode}
                 onClick={onActivateRectangleTool}
                 type="button"
               >
@@ -1043,6 +1221,149 @@ export const ToolsWindow = memo(function ToolsWindow({
                   </button>
                 </>
               ) : null}
+            </div>
+          ) : null}
+
+          {toolsFlow === "move" ? (
+            <div className="tools-window__section">
+              <div className="tools-window__flow-row">
+                <div className="tools-window__section-title">Move</div>
+                <button
+                  className="tools-window__flow-done"
+                  onClick={onBackToToolsFlow}
+                  type="button"
+                >
+                  Back
+                </button>
+              </div>
+              <div className="tools-window__profile-list">
+                {bodyItems.length === 0 ? (
+                  <div className="tools-window__profile-empty">No bodies yet</div>
+                ) : (
+                  bodyItems.map((body) => (
+                    <button
+                      key={body.id}
+                      className={`tools-window__profile-item${
+                        selectedSolidBodyId === body.id
+                          ? " tools-window__profile-item--active"
+                          : ""
+                      }`}
+                      onClick={() => onSelectBody(body.id)}
+                      type="button"
+                    >
+                      <span>{body.name}</span>
+                      <span>Active</span>
+                    </button>
+                  ))
+                )}
+              </div>
+              <div className="tools-window__meta-row">
+                <span>Selected</span>
+                <span>
+                  {selectedSolidBodyId
+                    ? bodyItems.find((body) => body.id === selectedSolidBodyId)?.name ??
+                      "Body"
+                    : "Select body"}
+                </span>
+              </div>
+              <div className="tools-window__meta-row">
+                <span>Mode</span>
+                <span>{moveDragActive ? "Drag Mode" : "Input Mode"}</span>
+              </div>
+              <div className="tools-window__input-grid">
+                <label>
+                  X (mm)
+                  <input
+                    inputMode="decimal"
+                    step={0.1}
+                    type="number"
+                    value={movePositionDraft.x}
+                    onChange={(event) =>
+                      onMovePositionDraftChange("x", event.target.value)
+                    }
+                    disabled={!selectedSolidBodyId}
+                  />
+                </label>
+                <label>
+                  Y (mm)
+                  <input
+                    inputMode="decimal"
+                    step={0.1}
+                    type="number"
+                    value={movePositionDraft.y}
+                    onChange={(event) =>
+                      onMovePositionDraftChange("y", event.target.value)
+                    }
+                    disabled={!selectedSolidBodyId}
+                  />
+                </label>
+                <label>
+                  Z (mm)
+                  <input
+                    inputMode="decimal"
+                    step={0.1}
+                    type="number"
+                    value={movePositionDraft.z}
+                    onChange={(event) =>
+                      onMovePositionDraftChange("z", event.target.value)
+                    }
+                    disabled={!selectedSolidBodyId}
+                  />
+                </label>
+              </div>
+              <div className="tools-window__profile-list">
+                {bodyItems.length <= 1 ? (
+                  <div className="tools-window__profile-empty">
+                    Create another body for center align
+                  </div>
+                ) : (
+                  bodyItems
+                    .filter((body) => body.id !== selectedSolidBodyId)
+                    .map((body) => (
+                      <button
+                        key={body.id}
+                        className={`tools-window__profile-item${
+                          moveReferenceBodyId === body.id
+                            ? " tools-window__profile-item--active"
+                            : ""
+                        }`}
+                        onClick={() =>
+                          onMoveReferenceBodyChange(
+                            moveReferenceBodyId === body.id ? null : body.id
+                          )
+                        }
+                        type="button"
+                      >
+                        <span>{body.name}</span>
+                        <span>Reference</span>
+                      </button>
+                    ))
+                )}
+              </div>
+              <button
+                className="tools-window__action-button"
+                disabled={!selectedSolidBodyId}
+                onClick={onSnapToOrigin}
+                type="button"
+              >
+                Snap to Origin
+              </button>
+              <button
+                className="tools-window__action-button"
+                disabled={!selectedSolidBodyId}
+                onClick={onDropToGround}
+                type="button"
+              >
+                Drop to Ground
+              </button>
+              <button
+                className="tools-window__action-button tools-window__action-button--primary"
+                disabled={!selectedSolidBodyId || !moveReferenceBodyId}
+                onClick={onCenterAlign}
+                type="button"
+              >
+                Center Align
+              </button>
             </div>
           ) : null}
         </div>
