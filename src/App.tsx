@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { CanvasWorkspace } from "./canvas/components/CanvasWorkspace";
 import { CadWorkspace } from "./cad/components/CadWorkspace";
 import { HierarchyPanel } from "./components/ui/HierarchyPanel";
@@ -79,8 +79,10 @@ function App() {
     [cadHierarchyState, planeSketches]
   );
 
-  useEffect(() => {
-    const workPlaneIds = cadHierarchyState?.workPlanes.map((plane) => plane.id) ?? [];
+  const handleCadStateChange = useCallback((nextState: CadHierarchyState | null) => {
+    setCadHierarchyState(nextState);
+
+    const workPlaneIds = nextState?.workPlanes.map((plane) => plane.id) ?? [];
 
     setPlaneSketches((current) => {
       const next = removePlaneSketchesForMissingPlanes(current, workPlaneIds);
@@ -93,15 +95,15 @@ function App() {
       }
 
       const selectedPlaneId =
-        cadHierarchyState?.primarySelection?.objectKind === "plane"
-          ? cadHierarchyState.primarySelection.objectId
+        nextState?.primarySelection?.objectKind === "plane"
+          ? nextState.primarySelection.objectId
           : null;
 
       return selectedPlaneId && workPlaneIds.includes(selectedPlaneId)
         ? selectedPlaneId
         : null;
     });
-  }, [cadHierarchyState]);
+  }, []);
 
   const selectedHierarchyId = useMemo(
     () =>
@@ -236,7 +238,7 @@ function App() {
         <CadWorkspace
           isActive={activeWorkspace === "cad"}
           planeSketches={planeSketches}
-          onStateChange={setCadHierarchyState}
+          onStateChange={handleCadStateChange}
           renameRequest={renameRequest}
           selectionRequest={selectionRequest}
         />

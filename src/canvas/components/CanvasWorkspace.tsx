@@ -271,7 +271,7 @@ export function CanvasWorkspace({
   const [historyCollapsed, setHistoryCollapsed] = useState(true);
   const [historyEntries, setHistoryEntries] = useState<CanvasHistoryEntry[]>([
     {
-      id: historyIdRef.current,
+      id: 0,
       label: "Canvas Init",
       snapshot: [],
     },
@@ -339,15 +339,6 @@ export function CanvasWorkspace({
   ]);
 
   useEffect(() => {
-    if (!selectionRequest || selectionRequest.workspace !== "canvas") {
-      return;
-    }
-
-    onActiveTargetPlaneChange(selectionRequest.planeId);
-    setSelectedStrokeId(selectionRequest.strokeId);
-  }, [onActiveTargetPlaneChange, selectionRequest]);
-
-  useEffect(() => {
     toolPieCenterRef.current = toolPieCenter;
   }, [toolPieCenter]);
 
@@ -385,6 +376,24 @@ export function CanvasWorkspace({
     onPlaneSketchesChange(clonePlaneSketches(snapshot));
   }, [onPlaneSketchesChange]);
 
+  const applyCanvasSelectionRequest = useCallback(
+    (request: HierarchySelectionRequest | null) => {
+      if (!request || request.workspace !== "canvas") {
+        return;
+      }
+
+      onActiveTargetPlaneChange(request.planeId);
+      setSelectedStrokeId(request.strokeId);
+    },
+    [onActiveTargetPlaneChange]
+  );
+
+  useEffect(() => {
+    // Synchronize hierarchy-driven canvas selection into local workspace state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    applyCanvasSelectionRequest(selectionRequest ?? null);
+  }, [applyCanvasSelectionRequest, selectionRequest]);
+
   useEffect(() => {
     if (!renameRequest || renameRequest.workspace !== "canvas") {
       return;
@@ -404,7 +413,7 @@ export function CanvasWorkspace({
     commitCanvasState("Rename Stroke", nextSketches);
   }, [renameRequest, commitCanvasState]);
 
-  useEffect(() => {
+  const clearInvalidSelectedStroke = useCallback(() => {
     if (
       selectedStrokeId !== null &&
       !displayedStrokes.some((stroke) => stroke.id === selectedStrokeId)
@@ -412,6 +421,12 @@ export function CanvasWorkspace({
       setSelectedStrokeId(null);
     }
   }, [displayedStrokes, selectedStrokeId]);
+
+  useEffect(() => {
+    // Keep local selection valid when the active plane's stroke list changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    clearInvalidSelectedStroke();
+  }, [clearInvalidSelectedStroke]);
 
   const undoCanvas = useCallback(() => {
     if (historyIndexRef.current <= 0) {

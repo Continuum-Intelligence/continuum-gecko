@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { HierarchyNode } from "../../shared/hierarchy/types";
 
 // ============================================
@@ -140,13 +140,8 @@ export const HierarchyPanel = memo(function HierarchyPanel({
 }) {
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-
-  useEffect(() => {
-    if (editingNodeId && selectedId !== editingNodeId) {
-      setEditingNodeId(null);
-      setRenameDraft("");
-    }
-  }, [editingNodeId, selectedId]);
+  const activeEditingNodeId =
+    editingNodeId && selectedId === editingNodeId ? editingNodeId : null;
 
   return (
     <>
@@ -178,7 +173,7 @@ export const HierarchyPanel = memo(function HierarchyPanel({
         <div className="hierarchy-panel__body">
           <HierarchyRow
             depth={0}
-            editingNodeId={editingNodeId}
+            editingNodeId={activeEditingNodeId}
             expandedIds={expandedIds}
             node={root}
             onCancelRename={() => {
@@ -186,14 +181,14 @@ export const HierarchyPanel = memo(function HierarchyPanel({
               setRenameDraft("");
             }}
             onCommitRename={() => {
-              if (!editingNodeId) {
+              if (!activeEditingNodeId) {
                 return;
               }
 
               const nextName = renameDraft.trim();
               if (nextName) {
                 const findNode = (candidate: HierarchyNode): HierarchyNode | null => {
-                  if (candidate.id === editingNodeId) {
+                  if (candidate.id === activeEditingNodeId) {
                     return candidate;
                   }
 

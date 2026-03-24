@@ -6,7 +6,7 @@ import type { PlaneSketch, PlaneSketchStroke } from "../shared/sketch/types";
 
 export type CanvasTool = "inking" | "select" | "erase";
 
-export type CanvasAction = "clear" | "interpret";
+export type CanvasAction = "clear";
 
 export type CanvasPieAction = CanvasTool | CanvasAction | "none";
 
@@ -32,10 +32,4 @@ export type CanvasHistoryEntry = {
   id: number;
   label: string;
   snapshot: PlaneSketch[];
-};
-
-export type CanvasWorkspaceMeta = {
-  modeLabel: string;
-  interpretationStatus: string;
-  inputStatus: string;
 };

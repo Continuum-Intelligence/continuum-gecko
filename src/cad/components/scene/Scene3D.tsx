@@ -36,6 +36,7 @@ import type {
   TransformAxis,
   TransformDragState,
   TransformMode,
+  TransformSubject,
   TransformTarget,
   Vector3Tuple,
   ViewAction,
@@ -1138,7 +1139,7 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
     }
     const radius = Math.max(0.1, body.radius ?? 0.1);
     return new THREE.CylinderGeometry(radius, radius, body.depth, 64, 1, true);
-  }, [body.depth, body.height, body.profileType, body.radius, body.width]);
+  }, [body.depth, body.height, body.meshData, body.profileType, body.radius, body.width]);
   const capGeometry = useMemo(() => {
     if (body.profileType === "mesh" && body.meshData) {
       return meshDataToGeometry(body.meshData);
@@ -1152,7 +1153,7 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
     }
     const radius = Math.max(0.1, body.radius ?? 0.1);
     return new THREE.CylinderGeometry(radius, radius, body.depth, 64);
-  }, [body.depth, body.height, body.profileType, body.radius, body.width]);
+  }, [body.depth, body.height, body.meshData, body.profileType, body.radius, body.width]);
   const edgeGeometry = useMemo(() => {
     if (body.profileType === "mesh") {
       return buildCadFeatureEdges(capGeometry, 55);
@@ -1193,6 +1194,7 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
             onSelectSolidBody(body.id);
           }}
           onDoubleClick={(event) => {
+            if (body.profileType === "mesh") return;
             event.stopPropagation();
             onSelectSolidFace(body.id, "side");
           }}
@@ -1940,6 +1942,7 @@ function ScaleGizmo(props: {
 function TransformGizmo({
   mode,
   target,
+  gizmoPosition,
   hoveredAxis,
   activeAxis,
   onHoverAxis,
@@ -1947,6 +1950,7 @@ function TransformGizmo({
 }: {
   mode: TransformMode;
   target: TransformTarget | null;
+  gizmoPosition?: Vector3Tuple | null;
   hoveredAxis: TransformAxis;
   activeAxis: TransformAxis;
   onHoverAxis: (axis: TransformAxis) => void;
@@ -1955,10 +1959,23 @@ function TransformGizmo({
     event: ThreeEvent<PointerEvent>
   ) => void;
 }) {
+  const { camera } = useThree();
+  const gizmoRef = useRef<THREE.Group | null>(null);
+
+  useFrame(() => {
+    if (!gizmoRef.current || !gizmoPosition) return;
+    const distance = camera.position.distanceTo(
+      new THREE.Vector3(gizmoPosition[0], gizmoPosition[1], gizmoPosition[2])
+    );
+    const scale = Math.max(0.06, distance * 0.085);
+    gizmoRef.current.scale.setScalar(scale);
+  });
+
   if (!mode || !target) return null;
+  const position = gizmoPosition ?? target.position;
 
   return (
-    <group position={target.position} rotation={target.rotation}>
+    <group ref={gizmoRef} position={position} rotation={target.rotation}>
       {mode === "move" && (
         <MoveGizmo
           hoveredAxis={hoveredAxis}
@@ -2047,48 +2064,6 @@ function getBodyGizmoTarget(body: SolidBody) {
   return [localCenter.x, localCenter.y, localCenter.z] as Vector3Tuple;
 }
 
-function BodyMoveGizmo({
-  target,
-  hoveredAxis,
-  activeAxis,
-  onHoverAxis,
-  onAxisPointerDown,
-}: {
-  target: Vector3Tuple | null;
-  hoveredAxis: TransformAxis;
-  activeAxis: TransformAxis;
-  onHoverAxis: (axis: TransformAxis) => void;
-  onAxisPointerDown: (
-    axis: Exclude<TransformAxis, null>,
-    event: ThreeEvent<PointerEvent>
-  ) => void;
-}) {
-  const { camera } = useThree();
-  const gizmoRef = useRef<THREE.Group | null>(null);
-
-  useFrame(() => {
-    if (!gizmoRef.current || !target) return;
-    const distance = camera.position.distanceTo(
-      new THREE.Vector3(target[0], target[1], target[2])
-    );
-    const scale = Math.max(0.06, distance * 0.085);
-    gizmoRef.current.scale.setScalar(scale);
-  });
-
-  if (!target) return null;
-
-  return (
-    <group ref={gizmoRef} position={target}>
-      <MoveGizmo
-        hoveredAxis={hoveredAxis}
-        activeAxis={activeAxis}
-        onHoverAxis={onHoverAxis}
-        onAxisPointerDown={onAxisPointerDown}
-      />
-    </group>
-  );
-}
-
 // ============================================
 // OVERLAY PROJECTION BRIDGE
 // ============================================
@@ -2163,12 +2138,7 @@ export const Scene3D = memo(function Scene3D({
   onExtrudePreviewDepthChange,
   onConfirmExtrudePreview,
   onCancelExtrudePreview,
-  moveModeActive,
-  moveDragActive,
-  moveHoveredAxis,
-  moveGizmoTargetBodyId,
-  onMoveHoverAxis,
-  onMoveAxisPointerDown,
+  transformSubject,
   onDimensionOverlayChange,
   transformMode,
   transformTarget,
@@ -2258,15 +2228,7 @@ export const Scene3D = memo(function Scene3D({
   onExtrudePreviewDepthChange: (signedDepth: number) => void;
   onConfirmExtrudePreview: () => void;
   onCancelExtrudePreview: () => void;
-  moveModeActive: boolean;
-  moveDragActive: boolean;
-  moveHoveredAxis: TransformAxis;
-  moveGizmoTargetBodyId: string | null;
-  onMoveHoverAxis: (axis: TransformAxis) => void;
-  onMoveAxisPointerDown: (
-    axis: Exclude<TransformAxis, null>,
-    event: ThreeEvent<PointerEvent>
-  ) => void;
+  transformSubject: TransformSubject | null;
   onDimensionOverlayChange: (items: DimensionOverlayItem[]) => void;
   transformMode: TransformMode;
   transformTarget: TransformTarget | null;
@@ -2279,12 +2241,12 @@ export const Scene3D = memo(function Scene3D({
   ) => void;
   exportRootRef: React.RefObject<THREE.Group | null>;
 }) {
-  const moveGizmoTarget = useMemo(() => {
-    if (!moveModeActive || !moveGizmoTargetBodyId) return null;
-    const body = solidBodies.find((item) => item.id === moveGizmoTargetBodyId);
+  const transformGizmoPosition = useMemo(() => {
+    if (transformSubject?.kind !== "body") return null;
+    const body = solidBodies.find((item) => item.id === transformSubject.bodyId);
     if (!body) return null;
     return getBodyGizmoTarget(body);
-  }, [moveGizmoTargetBodyId, moveModeActive, solidBodies]);
+  }, [solidBodies, transformSubject]);
 
   return (
     <Canvas
@@ -2368,27 +2330,19 @@ export const Scene3D = memo(function Scene3D({
       <TransformGizmo
         mode={transformMode}
         target={transformTarget}
+        gizmoPosition={transformGizmoPosition}
         hoveredAxis={hoveredTransformAxis}
         activeAxis={transformDragState?.axis ?? null}
         onHoverAxis={onHoverTransformAxis}
         onAxisPointerDown={onTransformAxisPointerDown}
       />
-      {moveModeActive ? (
-        <BodyMoveGizmo
-          target={moveGizmoTarget}
-          hoveredAxis={moveHoveredAxis}
-          activeAxis={moveDragActive ? moveHoveredAxis : null}
-          onHoverAxis={onMoveHoverAxis}
-          onAxisPointerDown={onMoveAxisPointerDown}
-        />
-      ) : null}
       <BaseGrid />
       <Axes />
       <OriginMarker />
       <OrbitControls
         ref={controlsRef}
         target={[0, 0, 0]}
-        enabled={!transformDragState && extrudePreview === null && !moveDragActive}
+        enabled={!transformDragState && extrudePreview === null}
       />
     </Canvas>
   );
@@ -2430,7 +2384,7 @@ function FaceLabel({
       position: normalVector.clone().multiplyScalar(0.67),
       quaternion: new THREE.Quaternion().setFromRotationMatrix(matrix),
     };
-  }, [color, fontSize, normal, text, up]);
+  }, [normal, up]);
 
   return (
     <Text

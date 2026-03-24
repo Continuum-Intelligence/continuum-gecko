@@ -192,6 +192,10 @@ export type TransformTarget = {
   scale: Vector3Tuple;
 };
 
+export type TransformSubject =
+  | { kind: "plane"; planeId: string }
+  | { kind: "body"; bodyId: string };
+
 export type TransformFieldGroup = "position" | "rotation" | "scale";
 
 export type TransformFieldAxis = "x" | "y" | "z";
@@ -208,7 +212,7 @@ export type TransformDragState = {
   startPosition: Vector3Tuple;
   startRotation: Vector3Tuple;
   startScale: Vector3Tuple;
-  selection: NonNullable<SceneSelection>;
+  subject: TransformSubject;
   startSnapshot: SceneSnapshot;
 } | null;
 

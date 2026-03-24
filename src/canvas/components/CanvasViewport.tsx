@@ -435,9 +435,9 @@ export const CanvasViewport = memo(function CanvasViewport({
         drawingEnabled,
         isSpacePressed,
         isPanning,
-        drawingPointerIdRef.current !== null
+        strokeDraft !== null
       ),
-    [activeTool, drawingEnabled, isActive, isPanning, isSpacePressed]
+    [activeTool, drawingEnabled, isPanning, isSpacePressed, strokeDraft]
   );
 
   const strokePaths = useMemo(
@@ -447,7 +447,7 @@ export const CanvasViewport = memo(function CanvasViewport({
         selected: stroke.id === selectedStrokeId,
         points: buildStrokeScreenPoints(
           stroke,
-          surfaceRef.current,
+          null,
           surfaceSize.width,
           surfaceSize.height,
           viewportState,
@@ -456,7 +456,7 @@ export const CanvasViewport = memo(function CanvasViewport({
         ),
         path: buildStrokePath(
           stroke,
-          surfaceRef.current,
+          null,
           surfaceSize.width,
           surfaceSize.height,
           viewportState,
@@ -483,7 +483,7 @@ export const CanvasViewport = memo(function CanvasViewport({
     return {
       points: buildStrokeScreenPoints(
         strokeDraft,
-        surfaceRef.current,
+        null,
         surfaceSize.width,
         surfaceSize.height,
         viewportState,
@@ -492,7 +492,7 @@ export const CanvasViewport = memo(function CanvasViewport({
       ),
       path: buildStrokePath(
         strokeDraft,
-        surfaceRef.current,
+        null,
         surfaceSize.width,
         surfaceSize.height,
         viewportState,
@@ -516,7 +516,7 @@ export const CanvasViewport = memo(function CanvasViewport({
 
     return projectPointToScreen(
       hoveredSnappedPoint,
-      surfaceRef.current,
+      null,
       surfaceSize.width,
       surfaceSize.height,
       viewportState,

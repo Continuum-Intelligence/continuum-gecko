@@ -1,14 +1,9 @@
-import type {
-  CanvasPieAction,
-  CanvasTool,
-  CanvasWorkspaceMeta,
-} from "./types";
+import type { CanvasPieAction } from "./types";
 
 // ============================================
 // CONSTANTS
 // ============================================
 
-export const CANVAS_WORKSPACE_TITLE = "Canvas Workspace";
 export const CANVAS_PIE_RADIUS = 78;
 export const CANVAS_BOARD_SIZE_MM = 500;
 export const CANVAS_GRID_MINOR_STEP_MM = 1;
@@ -22,34 +17,6 @@ export const CANVAS_ZOOM_MAX = 8;
 export const CANVAS_ZOOM_SENSITIVITY = 0.0014;
 export const CANVAS_TOOL_LABEL_TIMEOUT_MS = 2000;
 
-export const CANVAS_TOOL_OPTIONS: Array<{
-  id: CanvasTool;
-  label: string;
-  description: string;
-}> = [
-  {
-    id: "inking",
-    label: "Inking",
-    description: "Freehand sketch input for concept curves and shape blocking.",
-  },
-  {
-    id: "select",
-    label: "Select",
-    description: "Reference selection for future stroke editing and interpretation.",
-  },
-  {
-    id: "erase",
-    label: "Erase",
-    description: "Remove marks cleanly without leaving the sketching workspace.",
-  },
-];
-
-export const CANVAS_WORKSPACE_META: CanvasWorkspaceMeta = {
-  modeLabel: "2D Canvas",
-  interpretationStatus: "Awaiting sketch geometry",
-  inputStatus: "Mouse and stylus surface ready",
-};
-
 export const CANVAS_PIE_ITEMS: Array<{
   action: CanvasPieAction;
   label: string;
@@ -60,10 +27,4 @@ export const CANVAS_PIE_ITEMS: Array<{
   { action: "select", label: "Select", x: CANVAS_PIE_RADIUS, y: 0 },
   { action: "erase", label: "Erase", x: 0, y: CANVAS_PIE_RADIUS },
   { action: "clear", label: "Clear", x: -CANVAS_PIE_RADIUS, y: 0 },
-  {
-    action: "interpret",
-    label: "Interpret",
-    x: CANVAS_PIE_RADIUS * 0.7,
-    y: -CANVAS_PIE_RADIUS * 0.7,
-  },
 ] as const;

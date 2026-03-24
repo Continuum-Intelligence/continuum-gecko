@@ -22,6 +22,7 @@ type ShortcutArgs = {
   selectedToolAction: ToolPieAction;
   hoveredTransformMode: TransformMode;
   selectedObject: SceneSelection;
+  hasTransformSelection: boolean;
   secondarySelection: SceneSelection;
   transformMode: TransformMode;
   transformDragState: unknown;
@@ -321,7 +322,7 @@ export function useKeyboardShortcuts(args: ShortcutArgs) {
 
       if (
         event.key === "`" &&
-        args.selectedObject &&
+        args.hasTransformSelection &&
         !args.pieOpenRef.current &&
         !args.toolsPieOpenRef.current &&
         !args.transformDragState
@@ -363,7 +364,7 @@ export function useKeyboardShortcuts(args: ShortcutArgs) {
         const shouldApplyTransform =
           args.transformPieOpenRef.current &&
           !args.transformPieCancelledRef.current &&
-          args.selectedObject;
+          args.hasTransformSelection;
 
         args.setTransformPieOpen(false);
         args.transformPieCancelledRef.current = false;

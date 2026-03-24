@@ -17,6 +17,7 @@ import type {
   SceneHistoryEntry,
   SceneSnapshot,
   TransformDragState,
+  TransformSubject,
   Vector3Tuple,
 } from "../types";
 import { snapshotsEqual } from "../helpers/history";
@@ -46,18 +47,9 @@ export function useTransformDrag({
   historyEntryIdCounterRef: React.RefObject<number>;
   setTransformDragState: React.Dispatch<React.SetStateAction<TransformDragState>>;
   setHoveredTransformAxis: (axis: "x" | "y" | "z" | null) => void;
-  updateSceneObjectPosition: (
-    selection: NonNullable<TransformDragState>["selection"],
-    position: Vector3Tuple
-  ) => void;
-  updateSceneObjectRotation: (
-    selection: NonNullable<TransformDragState>["selection"],
-    rotation: Vector3Tuple
-  ) => void;
-  updateSceneObjectScale: (
-    selection: NonNullable<TransformDragState>["selection"],
-    scale: Vector3Tuple
-  ) => void;
+  updateSceneObjectPosition: (subject: TransformSubject, position: Vector3Tuple) => void;
+  updateSceneObjectRotation: (subject: TransformSubject, rotation: Vector3Tuple) => void;
+  updateSceneObjectScale: (subject: TransformSubject, scale: Vector3Tuple) => void;
 }) {
   useEffect(() => {
     if (!transformDragState) return;
@@ -82,7 +74,7 @@ export function useTransformDrag({
         }
 
         updateSceneObjectPosition(
-          transformDragState.selection,
+          transformDragState.subject,
           snapVectorComponent(
             transformDragState.startPosition,
             transformDragState.axis,
@@ -111,7 +103,7 @@ export function useTransformDrag({
           snapToIncrement(startDegrees + deltaDegrees, ROTATION_SNAP_INCREMENT)
         );
 
-        updateSceneObjectRotation(transformDragState.selection, nextRotation);
+        updateSceneObjectRotation(transformDragState.subject, nextRotation);
       }
 
       if (transformDragState.mode === "scale") {
@@ -134,7 +126,7 @@ export function useTransformDrag({
           )
         );
 
-        updateSceneObjectScale(transformDragState.selection, nextScale);
+        updateSceneObjectScale(transformDragState.subject, nextScale);
       }
     };
 

@@ -102,14 +102,16 @@ export function useDimensionOverlay({
   }, [controlsRef]);
 
   return useMemo(
-    () =>
-      buildDimensionOverlayItems(
+    () => {
+      void cameraTick;
+      return buildDimensionOverlayItems(
         dimensions,
         workPlanes,
         camera,
         width,
         height
-      ),
+      );
+    },
     [camera, cameraTick, dimensions, height, width, workPlanes]
   );
 }

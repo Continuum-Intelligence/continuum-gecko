@@ -473,77 +473,156 @@ export const InspectorWindow = memo(function InspectorWindow({
             </div>
           </div>
 
-          {selectedEntityType === "body" ? (
+          {selectedEntityType === "body" || selectedEntityType === "plane" ? (
             <>
               <div className="inspector-window__section">
                 <div className="inspector-window__section-title">Transform</div>
                 <div className="inspector-window__mode-row">
-                  <button
-                    className="inspector-window__mode-button inspector-window__mode-button--active"
-                    type="button"
-                  >
-                    Move
-                  </button>
-                  <button className="inspector-window__mode-button" disabled type="button">
-                    Rotate
-                  </button>
-                  <button className="inspector-window__mode-button" disabled type="button">
-                    Scale
-                  </button>
+                  {modeButtons.map((button) => (
+                    <button
+                      key={button.mode}
+                      className={`inspector-window__mode-button${
+                        transformMode === button.mode
+                          ? " inspector-window__mode-button--active"
+                          : ""
+                      }`}
+                      disabled={!hasSelection}
+                      onClick={() =>
+                        onSetTransformMode(
+                          transformMode === button.mode ? null : button.mode
+                        )
+                      }
+                      type="button"
+                    >
+                      {button.label}
+                    </button>
+                  ))}
                 </div>
               </div>
               <div className="inspector-window__section">
-                <div className="inspector-window__section-title">Position (mm)</div>
-                <div className="tools-window__input-grid">
-                  <label>
-                    X
-                    <input
-                      inputMode="decimal"
-                      type="number"
-                      value={bodyPositionDraft.x}
-                      onChange={(event) =>
-                        onBodyPositionDraftChange("x", event.target.value)
-                      }
-                    />
-                  </label>
-                  <label>
-                    Y
-                    <input
-                      inputMode="decimal"
-                      type="number"
-                      value={bodyPositionDraft.y}
-                      onChange={(event) =>
-                        onBodyPositionDraftChange("y", event.target.value)
-                      }
-                    />
-                  </label>
-                  <label>
-                    Z
-                    <input
-                      inputMode="decimal"
-                      type="number"
-                      value={bodyPositionDraft.z}
-                      onChange={(event) =>
-                        onBodyPositionDraftChange("z", event.target.value)
-                      }
-                    />
-                  </label>
+                <div className="inspector-window__section-title">Position</div>
+                <div className="inspector-window__grid">
+                  {renderTransformValueCard(
+                    "position",
+                    "x",
+                    transformTarget ? transformTarget.position[0] : null
+                  )}
+                  {renderTransformValueCard(
+                    "position",
+                    "y",
+                    transformTarget ? transformTarget.position[1] : null
+                  )}
+                  {renderTransformValueCard(
+                    "position",
+                    "z",
+                    transformTarget ? transformTarget.position[2] : null
+                  )}
                 </div>
-                <button className="tools-window__action-button" onClick={onSnapBodyToOrigin} type="button">
-                  Snap to Origin
-                </button>
-                <button className="tools-window__action-button" onClick={onDropBodyToGround} type="button">
-                  Drop to Ground
-                </button>
-                <button
-                  className="tools-window__action-button tools-window__action-button--primary"
-                  disabled={!canCenterAlignBodies}
-                  onClick={onCenterAlignBodies}
-                  type="button"
-                >
-                  Center Align
-                </button>
               </div>
+              <div className="inspector-window__section">
+                <div className="inspector-window__section-title">Rotation</div>
+                <div className="inspector-window__grid">
+                  {renderTransformValueCard(
+                    "rotation",
+                    "x",
+                    transformTarget ? transformTarget.rotation[0] : null
+                  )}
+                  {renderTransformValueCard(
+                    "rotation",
+                    "y",
+                    transformTarget ? transformTarget.rotation[1] : null
+                  )}
+                  {renderTransformValueCard(
+                    "rotation",
+                    "z",
+                    transformTarget ? transformTarget.rotation[2] : null
+                  )}
+                </div>
+              </div>
+              <div className="inspector-window__section">
+                <div className="inspector-window__section-title">Scale</div>
+                <div className="inspector-window__grid">
+                  {renderTransformValueCard(
+                    "scale",
+                    "x",
+                    transformTarget ? transformTarget.scale[0] : null
+                  )}
+                  {renderTransformValueCard(
+                    "scale",
+                    "y",
+                    transformTarget ? transformTarget.scale[1] : null
+                  )}
+                  {renderTransformValueCard(
+                    "scale",
+                    "z",
+                    transformTarget ? transformTarget.scale[2] : null
+                  )}
+                </div>
+              </div>
+              {selectedEntityType === "body" ? (
+                <div className="inspector-window__section">
+                  <div className="inspector-window__section-title">
+                    Body Utilities
+                  </div>
+                  <div className="tools-window__input-grid">
+                    <label>
+                      X
+                      <input
+                        inputMode="decimal"
+                        type="number"
+                        value={bodyPositionDraft.x}
+                        onChange={(event) =>
+                          onBodyPositionDraftChange("x", event.target.value)
+                        }
+                      />
+                    </label>
+                    <label>
+                      Y
+                      <input
+                        inputMode="decimal"
+                        type="number"
+                        value={bodyPositionDraft.y}
+                        onChange={(event) =>
+                          onBodyPositionDraftChange("y", event.target.value)
+                        }
+                      />
+                    </label>
+                    <label>
+                      Z
+                      <input
+                        inputMode="decimal"
+                        type="number"
+                        value={bodyPositionDraft.z}
+                        onChange={(event) =>
+                          onBodyPositionDraftChange("z", event.target.value)
+                        }
+                      />
+                    </label>
+                  </div>
+                  <button
+                    className="tools-window__action-button"
+                    onClick={onSnapBodyToOrigin}
+                    type="button"
+                  >
+                    Snap to Origin
+                  </button>
+                  <button
+                    className="tools-window__action-button"
+                    onClick={onDropBodyToGround}
+                    type="button"
+                  >
+                    Drop to Ground
+                  </button>
+                  <button
+                    className="tools-window__action-button tools-window__action-button--primary"
+                    disabled={!canCenterAlignBodies}
+                    onClick={onCenterAlignBodies}
+                    type="button"
+                  >
+                    Center Align
+                  </button>
+                </div>
+              ) : null}
             </>
           ) : null}
 
@@ -595,42 +674,6 @@ export const InspectorWindow = memo(function InspectorWindow({
             </div>
           ) : null}
 
-          {selectedEntityType === "plane" ? (
-            <>
-              <div className="inspector-window__section">
-                <div className="inspector-window__section-title">Transform</div>
-                <div className="inspector-window__mode-row">
-                  {modeButtons.map((button) => (
-                    <button
-                      key={button.mode}
-                      className={`inspector-window__mode-button${
-                        transformMode === button.mode
-                          ? " inspector-window__mode-button--active"
-                          : ""
-                      }`}
-                      disabled={!hasSelection}
-                      onClick={() =>
-                        onSetTransformMode(
-                          transformMode === button.mode ? null : button.mode
-                        )
-                      }
-                      type="button"
-                    >
-                      {button.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="inspector-window__section">
-                <div className="inspector-window__section-title">Position</div>
-                <div className="inspector-window__grid">
-                  {renderTransformValueCard("position", "x", transformTarget ? transformTarget.position[0] : null)}
-                  {renderTransformValueCard("position", "y", transformTarget ? transformTarget.position[1] : null)}
-                  {renderTransformValueCard("position", "z", transformTarget ? transformTarget.position[2] : null)}
-                </div>
-              </div>
-            </>
-          ) : null}
         </div>
       </div>
     </>

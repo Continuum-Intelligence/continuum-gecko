@@ -6,7 +6,6 @@ import {
   DEFAULT_CAMERA_POSITION,
   DEFAULT_CAMERA_TARGET,
   MIN_SCALE,
-  PIXEL_TO_MM,
   WORLD_UP,
 } from "../constants";
 import {
@@ -70,6 +69,7 @@ import type {
   TransformAxis,
   TransformDragState,
   TransformMode,
+  TransformSubject,
   TransformTarget,
   Vector3Tuple,
   ViewAction,
@@ -87,6 +87,16 @@ import { buildBooleanMeshData, meshDataEqual } from "../utils/booleanCSG";
 // ============================================
 // APP
 // ============================================
+
+function getBodyTransform(body: SolidBody) {
+  return (
+    body.transform ?? {
+      position: [0, 0, 0] as Vector3Tuple,
+      rotation: [0, 0, 0] as Vector3Tuple,
+      scale: [1, 1, 1] as Vector3Tuple,
+    }
+  );
+}
 
 function CadWorkspace({
   isActive,
@@ -293,13 +303,6 @@ function CadWorkspace({
     scale: Vector3Tuple;
   } | null>(null);
   const [moveReferenceBodyId, setMoveReferenceBodyId] = useState<string | null>(null);
-  const [moveHoveredAxis, setMoveHoveredAxis] = useState<TransformAxis>(null);
-  const [moveDragState, setMoveDragState] = useState<{
-    axis: Exclude<TransformAxis, null>;
-    startMouse: MousePosition;
-    startPosition: Vector3Tuple;
-    startSnapshot: SceneSnapshot;
-  } | null>(null);
   const [movePositionDraft, setMovePositionDraft] = useState({
     x: "0.00",
     y: "0.00",
@@ -350,8 +353,36 @@ function CadWorkspace({
     ]
   );
 
+  const resetTransientSceneUi = useCallback(() => {
+    setSelectedSketchCircleId(null);
+    setSelectedSolidBodyId(null);
+    setSelectedSolidFace(null);
+    setEntitySelection(null);
+    setSelectedFeatureNode(null);
+    setExtrudePreview(null);
+    setExtrudeModeArmed(false);
+    setBooleanModeActive(false);
+    setBooleanStep("idle");
+    setBooleanTargetBodyId(null);
+    setBooleanToolBodyId(null);
+    setBooleanPreviewMeshData(null);
+    setSketchModeActive(false);
+    setActiveSketchTool(null);
+    setCirclePreview(null);
+    setRectanglePreview(null);
+    setMoveReferenceBodyId(null);
+    setTransformDragState(null);
+    setHoveredTransformAxis(null);
+    setTransformMode(null);
+    setEditingTransformField(null);
+    setTransformFieldDraft("");
+    setIsRenamingObject(false);
+    setRenameDraft("");
+  }, []);
+
   const applySceneSnapshot = useCallback((snapshot: SceneSnapshot) => {
     const nextSnapshot = cloneSceneSnapshot(snapshot);
+    resetTransientSceneUi();
     setWorkPlanes(nextSnapshot.workPlanes);
     setSketchCircles(nextSnapshot.sketchCircles);
     setSketchRectangles(nextSnapshot.sketchRectangles);
@@ -363,7 +394,7 @@ function CadWorkspace({
     setDimensions(nextSnapshot.dimensions);
     setSelectedObject(nextSnapshot.primarySelection);
     setSecondarySelection(nextSnapshot.secondarySelection);
-  }, []);
+  }, [resetTransientSceneUi]);
 
   const commitSceneMutation = useCallback(
     (label: string, mutate: (snapshot: SceneSnapshot) => SceneSnapshot) => {
@@ -540,39 +571,84 @@ function CadWorkspace({
   );
 
   const updateSceneObjectPosition = useCallback(
-    (selection: NonNullable<SceneSelection>, position: Vector3Tuple) => {
-      if (selection.objectKind !== "plane") return;
+    (subject: TransformSubject, position: Vector3Tuple) => {
+      if (subject.kind === "plane") {
+        setWorkPlanes((existingPlanes) =>
+          existingPlanes.map((plane) =>
+            plane.id === subject.planeId ? { ...plane, position } : plane
+          )
+        );
+        return;
+      }
 
-      setWorkPlanes((existingPlanes) =>
-        existingPlanes.map((plane) =>
-          plane.id === selection.objectId ? { ...plane, position } : plane
-        )
+      setSolidBodies((existingBodies) =>
+        existingBodies.map((body) => {
+          if (body.id !== subject.bodyId) return body;
+          const transform = getBodyTransform(body);
+          return {
+            ...body,
+            transform: {
+              ...transform,
+              position,
+            },
+          };
+        })
       );
     },
     []
   );
 
   const updateSceneObjectRotation = useCallback(
-    (selection: NonNullable<SceneSelection>, rotation: Vector3Tuple) => {
-      if (selection.objectKind !== "plane") return;
+    (subject: TransformSubject, rotation: Vector3Tuple) => {
+      if (subject.kind === "plane") {
+        setWorkPlanes((existingPlanes) =>
+          existingPlanes.map((plane) =>
+            plane.id === subject.planeId ? { ...plane, rotation } : plane
+          )
+        );
+        return;
+      }
 
-      setWorkPlanes((existingPlanes) =>
-        existingPlanes.map((plane) =>
-          plane.id === selection.objectId ? { ...plane, rotation } : plane
-        )
+      setSolidBodies((existingBodies) =>
+        existingBodies.map((body) => {
+          if (body.id !== subject.bodyId) return body;
+          const transform = getBodyTransform(body);
+          return {
+            ...body,
+            transform: {
+              ...transform,
+              rotation,
+            },
+          };
+        })
       );
     },
     []
   );
 
   const updateSceneObjectScale = useCallback(
-    (selection: NonNullable<SceneSelection>, scale: Vector3Tuple) => {
-      if (selection.objectKind !== "plane") return;
+    (subject: TransformSubject, scale: Vector3Tuple) => {
+      if (subject.kind === "plane") {
+        setWorkPlanes((existingPlanes) =>
+          existingPlanes.map((plane) =>
+            plane.id === subject.planeId ? { ...plane, scale } : plane
+          )
+        );
+        return;
+      }
 
-      setWorkPlanes((existingPlanes) =>
-        existingPlanes.map((plane) =>
-          plane.id === selection.objectId ? { ...plane, scale } : plane
-        )
+      setSolidBodies((existingBodies) =>
+        existingBodies.map((body) => {
+          if (body.id !== subject.bodyId) return body;
+          const transform = getBodyTransform(body);
+          return {
+            ...body,
+            transform: {
+              ...transform,
+              scale,
+            },
+          };
+        })
       );
     },
     []
@@ -913,22 +989,13 @@ function CadWorkspace({
     [selectedSketchCircleId, sketchRectangles]
   );
   const selectedSketchProfile = selectedSketchCircle ?? selectedSketchRectangle;
-  const getBodyTransform = useCallback(
-    (body: SolidBody) =>
-      body.transform ?? {
-        position: [0, 0, 0] as Vector3Tuple,
-        rotation: [0, 0, 0] as Vector3Tuple,
-        scale: [1, 1, 1] as Vector3Tuple,
-      },
-    []
-  );
   const selectedSolidBody = useMemo(
     () => solidBodies.find((body) => body.id === selectedSolidBodyId) ?? null,
     [selectedSolidBodyId, solidBodies]
   );
   const selectedSolidBodyTransform = useMemo(
     () => (selectedSolidBody ? getBodyTransform(selectedSolidBody) : null),
-    [getBodyTransform, selectedSolidBody]
+    [selectedSolidBody]
   );
   const visibleSolidBodies = useMemo(
     () => solidBodies.filter((body) => body.isVisible !== false),
@@ -1127,7 +1194,7 @@ function CadWorkspace({
 
       return transformMatrix.multiply(planeMatrix.multiply(localMatrix));
     },
-    [getBodyTransform]
+    []
   );
 
   const createSketchPlaneFromBodyFace = useCallback(
@@ -1149,7 +1216,7 @@ function CadWorkspace({
       const topZ = (body.direction ?? 1) * body.depth;
       const bottomZ = 0;
       let faceLocalPosition = new THREE.Vector3(centerX, centerY, topZ);
-      let faceLocalQuaternion = new THREE.Quaternion();
+      const faceLocalQuaternion = new THREE.Quaternion();
 
       if (faceId === "bottom") {
         faceLocalPosition = new THREE.Vector3(centerX, centerY, bottomZ);
@@ -1192,7 +1259,7 @@ function CadWorkspace({
         scale: [Math.abs(worldScale.x), Math.abs(worldScale.y), Math.abs(worldScale.z)] as Vector3Tuple,
       };
     },
-    [getBodyTransform]
+    []
   );
 
   const getBodyWorldBounds = useCallback(
@@ -1235,22 +1302,6 @@ function CadWorkspace({
     },
     [buildBodyMatrix]
   );
-
-  const updateBodyTransformPosition = useCallback((bodyId: string, position: Vector3Tuple) => {
-    setSolidBodies((existingBodies) =>
-      existingBodies.map((body) => {
-        if (body.id !== bodyId) return body;
-        const transform = getBodyTransform(body);
-        return {
-          ...body,
-          transform: {
-            ...transform,
-            position: [...position] as Vector3Tuple,
-          },
-        };
-      })
-    );
-  }, [getBodyTransform]);
 
   const applyCircleRadiusDraft = useCallback((nextRadiusText: string) => {
     setCircleRadiusDraft(nextRadiusText);
@@ -1706,9 +1757,14 @@ function CadWorkspace({
   ]);
 
   const handleSelectSolidFace = useCallback((bodyId: string, faceId: BodyFaceId) => {
+    const body = solidBodies.find((item) => item.id === bodyId);
+    if (!body) return;
+    if (body.profileType === "mesh") {
+      handleSelectSolidBody(bodyId);
+      return;
+    }
+
     if (toolsFlow === "sketch" && sketchPlaneSelectionMode) {
-      const body = solidBodies.find((item) => item.id === bodyId);
-      if (!body) return;
       setSelectedSolidBodyId(bodyId);
       setSelectedSolidFace({ bodyId, faceId });
       setEntitySelection({ kind: "face", bodyId, faceId });
@@ -1741,24 +1797,11 @@ function CadWorkspace({
     booleanFeatures,
     createSketchPlaneFromBodyFace,
     extrudeFeatures,
+    handleSelectSolidBody,
     sketchPlaneSelectionMode,
     solidBodies,
     toolsFlow,
   ]);
-
-  const handleMoveAxisPointerDown = useCallback(
-    (axis: Exclude<TransformAxis, null>, event: ThreeEvent<PointerEvent>) => {
-      if (!selectedSolidBodyTransform) return;
-      setMoveDragState({
-        axis,
-        startMouse: { x: event.clientX, y: event.clientY },
-        startPosition: [...selectedSolidBodyTransform.position] as Vector3Tuple,
-        startSnapshot: getCurrentSceneSnapshot(),
-      });
-      setMoveHoveredAxis(axis);
-    },
-    [getCurrentSceneSnapshot, selectedSolidBodyTransform]
-  );
 
   const handleConfirmExtrudePreview = useCallback(() => {
     if (!extrudePreview) return;
@@ -1860,7 +1903,7 @@ function CadWorkspace({
   // --------------------------------------------
 
   const transformTarget = useMemo<TransformTarget | null>(() => {
-    if (selectedSolidBody) {
+    if (selectedSolidBody && !selectedSolidFace) {
       const transform = getBodyTransform(selectedSolidBody);
       return {
         position: [...transform.position] as Vector3Tuple,
@@ -1874,7 +1917,17 @@ function CadWorkspace({
       rotation: selectedPlane.rotation,
       scale: selectedPlane.scale,
     };
-  }, [getBodyTransform, selectedPlane, selectedSolidBody]);
+  }, [selectedPlane, selectedSolidBody, selectedSolidFace]);
+
+  const transformSubject = useMemo<TransformSubject | null>(() => {
+    if (selectedSolidBody && !selectedSolidFace) {
+      return { kind: "body", bodyId: selectedSolidBody.id };
+    }
+    if (selectedPlane) {
+      return { kind: "plane", planeId: selectedPlane.id };
+    }
+    return null;
+  }, [selectedPlane, selectedSolidBody, selectedSolidFace]);
 
   const selectedEntityType = useMemo<
     "none" | "body" | "plane" | "profile" | "face"
@@ -1901,64 +1954,59 @@ function CadWorkspace({
     [selectedEntityType, selectedPlane]
   );
 
-  // --------------------------------------------
-  // Ref Synchronization
-  // --------------------------------------------
+  const commitTransformSubjectMutation = useCallback(
+    (label: string, group: "position" | "rotation" | "scale", value: Vector3Tuple) => {
+      if (!transformSubject) return;
 
-  useEffect(() => {
-    workPlanesRef.current = workPlanes;
-  }, [workPlanes]);
+      commitSceneMutation(label, (snapshot) => {
+        if (transformSubject.kind === "plane") {
+          return {
+            ...snapshot,
+            workPlanes: snapshot.workPlanes.map((plane) =>
+              plane.id !== transformSubject.planeId
+                ? plane
+                : group === "position"
+                  ? { ...plane, position: value }
+                  : group === "rotation"
+                    ? { ...plane, rotation: value }
+                    : { ...plane, scale: value }
+            ),
+          };
+        }
 
-  useEffect(() => {
-    dimensionsRef.current = dimensions;
-  }, [dimensions]);
+        return {
+          ...snapshot,
+          solidBodies: snapshot.solidBodies.map((body) => {
+            if (body.id !== transformSubject.bodyId) return body;
+            const transform = getBodyTransform(body);
+            return {
+              ...body,
+              transform: {
+                ...transform,
+                ...(group === "position"
+                  ? { position: value }
+                  : group === "rotation"
+                    ? { rotation: value }
+                    : { scale: value }),
+              },
+            };
+          }),
+        };
+      });
+    },
+    [commitSceneMutation, transformSubject]
+  );
 
-  useEffect(() => {
-    primarySelectionRef.current = selectedObject;
-  }, [selectedObject]);
-
-  useEffect(() => {
-    onStateChange?.({
-      workPlanes,
-      dimensions,
-      primarySelection: selectedObject,
-      secondarySelection,
-      historyEntries,
-      historyIndex,
-    });
-  }, [
-    dimensions,
-    historyEntries,
-    historyIndex,
-    onStateChange,
-    secondarySelection,
-    selectedObject,
-    workPlanes,
-  ]);
-
-  useEffect(() => {
-    if (!selectionRequest || selectionRequest.workspace !== "cad") {
+  const applyCadSelectionRequest = useCallback((request: HierarchySelectionRequest | null) => {
+    if (!request || request.workspace !== "cad") {
       return;
     }
 
-    setSelectedObject(selectionRequest.selection);
+    setSelectedObject(request.selection);
     setSecondarySelection(null);
-  }, [selectionRequest]);
+  }, []);
 
-  useEffect(() => {
-    if (!renameRequest || renameRequest.workspace !== "cad") {
-      return;
-    }
-
-    const selection = createSelection("plane", renameRequest.objectId, "object");
-    renameSelectedObject(selection, renameRequest.nextName);
-  }, [renameRequest, renameSelectedObject]);
-
-  useEffect(() => {
-    secondarySelectionRef.current = secondarySelection;
-  }, [secondarySelection]);
-
-  useEffect(() => {
+  const clearSketchStateWithoutActivePlane = useCallback(() => {
     if (activeSketchPlane) return;
     setSketchModeActive(false);
     setActiveSketchTool(null);
@@ -1966,19 +2014,7 @@ function CadWorkspace({
     setRectanglePreview(null);
   }, [activeSketchPlane]);
 
-  useEffect(
-    () => () => {
-      if (sketchPreviewRafRef.current !== null) {
-        window.cancelAnimationFrame(sketchPreviewRafRef.current);
-      }
-      if (extrudePreviewRafRef.current !== null) {
-        window.cancelAnimationFrame(extrudePreviewRafRef.current);
-      }
-    },
-    []
-  );
-
-  useEffect(() => {
+  const syncProfileDraftsFromSelection = useCallback(() => {
     if (!selectedSketchProfile) return;
     if (selectedSketchProfile.profileType === "circle") {
       setCircleRadiusDraft(selectedSketchProfile.radius.toFixed(2));
@@ -1989,22 +2025,7 @@ function CadWorkspace({
     setRectangleHeightDraft(selectedSketchProfile.height.toFixed(2));
   }, [selectedSketchProfile]);
 
-  useEffect(() => {
-    const shouldDrawCursor =
-      sketchModeActive &&
-      (activeSketchTool === "circle" || activeSketchTool === "rectangle");
-    const isDraggingSketch = !!(circlePreview?.dragging || rectanglePreview?.dragging);
-    document.body.style.cursor = shouldDrawCursor
-      ? isDraggingSketch
-        ? "grabbing"
-        : "crosshair"
-      : "";
-    return () => {
-      document.body.style.cursor = "";
-    };
-  }, [activeSketchTool, circlePreview?.dragging, rectanglePreview?.dragging, sketchModeActive]);
-
-  useEffect(() => {
+  const clearInvalidSelectedSketchProfile = useCallback(() => {
     if (!selectedSketchCircleId) return;
     if (
       sketchCircles.some((circle) => circle.id === selectedSketchCircleId) ||
@@ -2015,7 +2036,7 @@ function CadWorkspace({
     setSelectedSketchCircleId(null);
   }, [selectedSketchCircleId, sketchCircles, sketchRectangles]);
 
-  useEffect(() => {
+  const reconcileBodiesFromSketchProfiles = useCallback(() => {
     setSolidBodies((existingBodies) => {
       let changed = false;
       const nextBodies: SolidBody[] = [];
@@ -2074,7 +2095,7 @@ function CadWorkspace({
     });
   }, [sketchCircles, sketchRectangles]);
 
-  useEffect(() => {
+  const reconcileSketchFeatures = useCallback(() => {
     setSketchFeatures((existingFeatures) => {
       let changed = false;
       const nextFeatures = existingFeatures
@@ -2099,14 +2120,13 @@ function CadWorkspace({
     });
   }, [sketchCircles, sketchRectangles]);
 
-  useEffect(() => {
+  const reconcileExtrudeFeatures = useCallback(() => {
     setExtrudeFeatures((existingFeatures) => {
       let changed = false;
       const nextFeatures = existingFeatures
         .map((feature) => {
-          const sourceExists = sketchCircles.some(
-            (circle) => circle.id === feature.sourceProfileId
-          ) ||
+          const sourceExists =
+            sketchCircles.some((circle) => circle.id === feature.sourceProfileId) ||
             sketchRectangles.some(
               (rectangle) => rectangle.id === feature.sourceProfileId
             );
@@ -2131,7 +2151,7 @@ function CadWorkspace({
     });
   }, [sketchCircles, sketchRectangles, solidBodies]);
 
-  useEffect(() => {
+  const reconcileFeatureOrder = useCallback(() => {
     setFeatureOrder((existingOrder) => {
       const nextOrder = existingOrder.filter((entry) =>
         entry.kind === "sketch"
@@ -2144,7 +2164,7 @@ function CadWorkspace({
     });
   }, [booleanFeatures, extrudeFeatures, sketchFeatures]);
 
-  useEffect(() => {
+  const reconcileBooleanFeatures = useCallback(() => {
     setBooleanFeatures((existingFeatures) => {
       const nextFeatures = existingFeatures.filter(
         (feature) =>
@@ -2158,7 +2178,7 @@ function CadWorkspace({
     });
   }, [solidBodies]);
 
-  useEffect(() => {
+  const pruneBodiesForBooleanFeatures = useCallback(() => {
     setSolidBodies((existingBodies) => {
       const nextBodies = existingBodies.filter((body) =>
         body.sourceBooleanFeatureId
@@ -2169,15 +2189,14 @@ function CadWorkspace({
     });
   }, [booleanFeatures]);
 
-  useEffect(() => {
+  const reconcileBooleanResultBodies = useCallback(() => {
     setSolidBodies((existingBodies) => {
       let changed = false;
       const nextBodies = existingBodies.map((body) => ({ ...body }));
       const byId = new Map(nextBodies.map((body) => [body.id, body]));
       const orderedBooleanFeatures = featureOrder
         .filter(
-          (entry): entry is { kind: "boolean"; id: string } =>
-            entry.kind === "boolean"
+          (entry): entry is { kind: "boolean"; id: string } => entry.kind === "boolean"
         )
         .map((entry) => booleanFeatures.find((feature) => feature.id === entry.id))
         .filter((feature): feature is BooleanFeature => !!feature);
@@ -2210,9 +2229,9 @@ function CadWorkspace({
 
       return changed ? nextBodies : existingBodies;
     });
-  }, [booleanFeatures, featureOrder, solidBodies]);
+  }, [booleanFeatures, featureOrder]);
 
-  useEffect(() => {
+  const syncExtrudeDepthDraft = useCallback(() => {
     if (extrudePreview) {
       setExtrudeDepthDraft(extrudePreview.depth.toFixed(2));
       return;
@@ -2222,14 +2241,14 @@ function CadWorkspace({
     }
   }, [extrudePreview, selectedSolidBody]);
 
-  useEffect(() => {
+  const clearMissingSelectedBody = useCallback(() => {
     if (!selectedSolidBodyId) return;
     if (solidBodies.some((body) => body.id === selectedSolidBodyId)) return;
     setSelectedSolidBodyId(null);
     setSelectedSolidFace(null);
   }, [selectedSolidBodyId, solidBodies]);
 
-  useEffect(() => {
+  const syncActiveSketchPlaneValidity = useCallback(() => {
     if (!activeSketchPlane) return;
     if (activeSketchPlane.sourceKind === "workplane") {
       const workPlaneId = activeSketchPlane.id.replace("workplane-", "");
@@ -2251,13 +2270,7 @@ function CadWorkspace({
     setActiveSketchTool(null);
   }, [activeSketchPlane, solidBodies, workPlanes]);
 
-  useEffect(() => {
-    if (toolsFlow === "move") return;
-    setMoveDragState(null);
-    setMoveHoveredAxis(null);
-  }, [toolsFlow]);
-
-  useEffect(() => {
+  const ensureBodyTransforms = useCallback(() => {
     setSolidBodies((existingBodies) => {
       let changed = false;
       const nextBodies = existingBodies.map((body) => {
@@ -2276,7 +2289,7 @@ function CadWorkspace({
     });
   }, []);
 
-  useEffect(() => {
+  const syncMovePositionDraft = useCallback(() => {
     if (!selectedSolidBodyTransform) return;
     setMovePositionDraft({
       x: selectedSolidBodyTransform.position[0].toFixed(2),
@@ -2285,7 +2298,7 @@ function CadWorkspace({
     });
   }, [selectedSolidBodyTransform]);
 
-  useEffect(() => {
+  const syncMoveReferenceBody = useCallback(() => {
     if (!moveReferenceBodyId) return;
     if (moveReferenceBodyId === selectedSolidBodyId) {
       setMoveReferenceBodyId(null);
@@ -2295,12 +2308,10 @@ function CadWorkspace({
     setMoveReferenceBodyId(null);
   }, [moveReferenceBodyId, selectedSolidBodyId, solidBodies]);
 
-  useEffect(() => {
+  const syncExtrudePreviewSource = useCallback(() => {
     if (!extrudePreview) return;
     const sourceExists =
-      sketchCircles.some(
-      (circle) => circle.id === extrudePreview.sourceSketchId
-      ) ||
+      sketchCircles.some((circle) => circle.id === extrudePreview.sourceSketchId) ||
       sketchRectangles.some(
         (rectangle) => rectangle.id === extrudePreview.sourceSketchId
       );
@@ -2310,7 +2321,7 @@ function CadWorkspace({
     }
   }, [extrudePreview, sketchCircles, sketchRectangles]);
 
-  useEffect(() => {
+  const syncBooleanPreview = useCallback(() => {
     if (!booleanModeActive || !booleanTargetBodyId || !booleanToolBodyId) {
       setBooleanPreviewMeshData(null);
       return;
@@ -2334,67 +2345,217 @@ function CadWorkspace({
     solidBodies,
   ]);
 
+  const clearTransformUiWithoutSubject = useCallback(() => {
+    if (transformSubject) return;
+    setTransformMode(null);
+    setTransformPieOpen(false);
+    transformPieCancelledRef.current = false;
+    setHoveredTransformAxis(null);
+    setTransformDragState(null);
+    setSecondarySelection(null);
+    setIsRenamingObject(false);
+    setRenameDraft("");
+    setEditingTransformField(null);
+    setTransformFieldDraft("");
+  }, [transformSubject]);
+
+  const syncTransformDragWithMode = useCallback(() => {
+    setHoveredTransformAxis(null);
+    setTransformDragState((currentDragState) => {
+      if (!currentDragState) return null;
+      if (transformMode === currentDragState.mode) return currentDragState;
+      return null;
+    });
+  }, [transformMode]);
+
   // --------------------------------------------
-  // Body Move Drag
+  // Ref Synchronization
   // --------------------------------------------
 
   useEffect(() => {
-    if (!moveDragState || !selectedSolidBodyId) return;
+    workPlanesRef.current = workPlanes;
+  }, [workPlanes]);
 
-    const handleMouseMove = (event: MouseEvent) => {
-      const deltaX = event.clientX - moveDragState.startMouse.x;
-      const deltaY = event.clientY - moveDragState.startMouse.y;
-      const nextPosition = [...moveDragState.startPosition] as Vector3Tuple;
+  useEffect(() => {
+    dimensionsRef.current = dimensions;
+  }, [dimensions]);
 
-      if (moveDragState.axis === "x") {
-        nextPosition[0] = snapToIncrement(
-          moveDragState.startPosition[0] + deltaX * PIXEL_TO_MM
-        );
-      } else if (moveDragState.axis === "y") {
-        nextPosition[1] = snapToIncrement(
-          moveDragState.startPosition[1] - deltaY * PIXEL_TO_MM
-        );
-      } else {
-        nextPosition[2] = snapToIncrement(
-          moveDragState.startPosition[2] - deltaY * PIXEL_TO_MM
-        );
-      }
+  useEffect(() => {
+    primarySelectionRef.current = selectedObject;
+  }, [selectedObject]);
 
-      updateBodyTransformPosition(selectedSolidBodyId, nextPosition);
-    };
-
-    const handleMouseUp = () => {
-      const currentSnapshot = getCurrentSceneSnapshot();
-      if (!snapshotsEqual(moveDragState.startSnapshot, currentSnapshot)) {
-        const nextEntry: SceneHistoryEntry = {
-          id: `history-${historyEntryIdCounterRef.current}`,
-          label: "Move Body",
-          snapshot: currentSnapshot,
-        };
-        historyEntryIdCounterRef.current += 1;
-        setHistoryEntries((existingEntries) => [
-          ...existingEntries.slice(0, historyIndex + 1),
-          nextEntry,
-        ]);
-        setHistoryIndex((index) => index + 1);
-      }
-      setMoveDragState(null);
-      setMoveHoveredAxis(null);
-    };
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-    };
+  useEffect(() => {
+    onStateChange?.({
+      workPlanes,
+      dimensions,
+      primarySelection: selectedObject,
+      secondarySelection,
+      historyEntries,
+      historyIndex,
+    });
   }, [
-    getCurrentSceneSnapshot,
+    dimensions,
+    historyEntries,
     historyIndex,
-    moveDragState,
-    selectedSolidBodyId,
-    updateBodyTransformPosition,
+    onStateChange,
+    secondarySelection,
+    selectedObject,
+    workPlanes,
   ]);
+
+  useEffect(() => {
+    // Apply hierarchy-driven CAD selection requests into the local scene state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    applyCadSelectionRequest(selectionRequest ?? null);
+  }, [applyCadSelectionRequest, selectionRequest]);
+
+  useEffect(() => {
+    if (!renameRequest || renameRequest.workspace !== "cad") {
+      return;
+    }
+
+    const selection = createSelection("plane", renameRequest.objectId, "object");
+    renameSelectedObject(selection, renameRequest.nextName);
+  }, [renameRequest, renameSelectedObject]);
+
+  useEffect(() => {
+    secondarySelectionRef.current = secondarySelection;
+  }, [secondarySelection]);
+
+  useEffect(() => {
+    // Active sketch tools are only valid while a sketch plane exists.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    clearSketchStateWithoutActivePlane();
+  }, [clearSketchStateWithoutActivePlane]);
+
+  useEffect(
+    () => () => {
+      if (sketchPreviewRafRef.current !== null) {
+        window.cancelAnimationFrame(sketchPreviewRafRef.current);
+      }
+      if (extrudePreviewRafRef.current !== null) {
+        window.cancelAnimationFrame(extrudePreviewRafRef.current);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    // Profile draft inputs mirror the selected profile for direct editing.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    syncProfileDraftsFromSelection();
+  }, [syncProfileDraftsFromSelection]);
+
+  useEffect(() => {
+    const shouldDrawCursor =
+      sketchModeActive &&
+      (activeSketchTool === "circle" || activeSketchTool === "rectangle");
+    const isDraggingSketch = !!(circlePreview?.dragging || rectanglePreview?.dragging);
+    document.body.style.cursor = shouldDrawCursor
+      ? isDraggingSketch
+        ? "grabbing"
+        : "crosshair"
+      : "";
+    return () => {
+      document.body.style.cursor = "";
+    };
+  }, [activeSketchTool, circlePreview?.dragging, rectanglePreview?.dragging, sketchModeActive]);
+
+  useEffect(() => {
+    // Clear stale profile selection after deletes/history jumps.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    clearInvalidSelectedSketchProfile();
+  }, [clearInvalidSelectedSketchProfile]);
+
+  useEffect(() => {
+    // Reconcile dependent solids against upstream sketch edits.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    reconcileBodiesFromSketchProfiles();
+  }, [reconcileBodiesFromSketchProfiles]);
+
+  useEffect(() => {
+    // Remove empty sketch features and stale profile references.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    reconcileSketchFeatures();
+  }, [reconcileSketchFeatures]);
+
+  useEffect(() => {
+    // Keep extrude features aligned with their source body state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    reconcileExtrudeFeatures();
+  }, [reconcileExtrudeFeatures]);
+
+  useEffect(() => {
+    // Filter timeline entries that no longer point to live features.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    reconcileFeatureOrder();
+  }, [reconcileFeatureOrder]);
+
+  useEffect(() => {
+    // Drop boolean features whose referenced bodies no longer exist.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    reconcileBooleanFeatures();
+  }, [reconcileBooleanFeatures]);
+
+  useEffect(() => {
+    // Remove boolean result bodies when their generating feature is gone.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    pruneBodiesForBooleanFeatures();
+  }, [pruneBodiesForBooleanFeatures]);
+
+  useEffect(() => {
+    // Rebuild cached boolean result meshes after upstream body changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    reconcileBooleanResultBodies();
+  }, [reconcileBooleanResultBodies]);
+
+  useEffect(() => {
+    // Depth field mirrors either the active preview or selected body.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    syncExtrudeDepthDraft();
+  }, [syncExtrudeDepthDraft]);
+
+  useEffect(() => {
+    // Clear invalid body selection after deletes/history jumps.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    clearMissingSelectedBody();
+  }, [clearMissingSelectedBody]);
+
+  useEffect(() => {
+    // Invalidate the active sketch plane if its source entity disappears.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    syncActiveSketchPlaneValidity();
+  }, [syncActiveSketchPlaneValidity]);
+
+  useEffect(() => {
+    // Normalize legacy bodies that predate the transform field.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    ensureBodyTransforms();
+  }, [ensureBodyTransforms]);
+
+  useEffect(() => {
+    // Mirror selected body transform into the numeric move inputs.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    syncMovePositionDraft();
+  }, [syncMovePositionDraft]);
+
+  useEffect(() => {
+    // Keep the move reference body valid against selection/body changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    syncMoveReferenceBody();
+  }, [syncMoveReferenceBody]);
+
+  useEffect(() => {
+    // Cancel previews whose source profile was removed.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    syncExtrudePreviewSource();
+  }, [syncExtrudePreviewSource]);
+
+  useEffect(() => {
+    // Maintain the live boolean preview as the selected bodies change.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    syncBooleanPreview();
+  }, [syncBooleanPreview]);
 
   // --------------------------------------------
   // Transform Drag
@@ -2443,27 +2604,16 @@ function CadWorkspace({
   // --------------------------------------------
 
   useEffect(() => {
-    if (selectedObject) return;
-    setTransformMode(null);
-    setTransformPieOpen(false);
-    transformPieCancelledRef.current = false;
-    setHoveredTransformAxis(null);
-    setTransformDragState(null);
-    setSecondarySelection(null);
-    setIsRenamingObject(false);
-    setRenameDraft("");
-    setEditingTransformField(null);
-    setTransformFieldDraft("");
-  }, [selectedObject]);
+    // Reset transform-only UI when no transformable subject remains selected.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    clearTransformUiWithoutSubject();
+  }, [clearTransformUiWithoutSubject]);
 
   useEffect(() => {
-    setHoveredTransformAxis(null);
-    setTransformDragState((currentDragState) => {
-      if (!currentDragState) return null;
-      if (transformMode === currentDragState.mode) return currentDragState;
-      return null;
-    });
-  }, [transformMode]);
+    // Abort the current drag when the transform mode changes underneath it.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    syncTransformDragWithMode();
+  }, [syncTransformDragWithMode]);
 
   // --------------------------------------------
   // Keyboard Shortcuts
@@ -2492,6 +2642,7 @@ function CadWorkspace({
       selectedToolAction,
       hoveredTransformMode,
       selectedObject,
+      hasTransformSelection: !!transformSubject,
       secondarySelection,
       transformMode,
       transformDragState,
@@ -2533,6 +2684,7 @@ function CadWorkspace({
       selectedToolAction,
       hoveredTransformMode,
       selectedObject,
+      transformSubject,
       secondarySelection,
       transformMode,
       transformDragState,
@@ -2621,7 +2773,7 @@ function CadWorkspace({
       axis: Exclude<TransformAxis, null>,
       event: ThreeEvent<PointerEvent>
     ) => {
-      if (!transformMode || !selectedObject || !transformTarget) return;
+      if (!transformMode || !transformSubject || !transformTarget) return;
 
       event.stopPropagation();
       setHoveredTransformAxis(axis);
@@ -2632,11 +2784,11 @@ function CadWorkspace({
         startPosition: [...transformTarget.position] as Vector3Tuple,
         startRotation: [...transformTarget.rotation] as Vector3Tuple,
         startScale: [...transformTarget.scale] as Vector3Tuple,
-        selection: selectedObject,
+        subject: transformSubject,
         startSnapshot: getCurrentSceneSnapshot(),
       });
     },
-    [getCurrentSceneSnapshot, selectedObject, transformMode, transformTarget]
+    [getCurrentSceneSnapshot, transformMode, transformSubject, transformTarget]
   );
 
   const handleSketchPlanePointerDown = useCallback(
@@ -2810,6 +2962,7 @@ function CadWorkspace({
 
   const handleOpenMoveFlow = useCallback(() => {
     setToolsFlow("move");
+    setTransformMode("move");
     setSketchModeActive(false);
     setActiveSketchTool(null);
     setCirclePreview(null);
@@ -2881,9 +3034,9 @@ function CadWorkspace({
       const axisIndex = axis === "x" ? 0 : axis === "y" ? 1 : 2;
       const nextPosition = [...currentPosition] as Vector3Tuple;
       nextPosition[axisIndex] = snapToIncrement(nextValue);
-      updateBodyTransformPosition(selectedSolidBodyId, nextPosition);
+      updateSceneObjectPosition({ kind: "body", bodyId: selectedSolidBodyId }, nextPosition);
     },
-    [selectedSolidBodyId, selectedSolidBodyTransform?.position, updateBodyTransformPosition]
+    [selectedSolidBodyId, selectedSolidBodyTransform?.position, updateSceneObjectPosition]
   );
 
   const handleSnapBodyToOrigin = useCallback(() => {
@@ -2902,7 +3055,7 @@ function CadWorkspace({
         };
       }),
     }));
-  }, [commitSceneMutation, getBodyTransform, selectedSolidBodyId]);
+  }, [commitSceneMutation, selectedSolidBodyId]);
 
   const handleDropBodyToGround = useCallback(() => {
     if (!selectedSolidBodyId) return;
@@ -2934,7 +3087,6 @@ function CadWorkspace({
     }));
   }, [
     commitSceneMutation,
-    getBodyTransform,
     getBodyWorldBounds,
     selectedSolidBodyId,
     solidBodies,
@@ -2976,7 +3128,6 @@ function CadWorkspace({
     }));
   }, [
     commitSceneMutation,
-    getBodyTransform,
     getBodyWorldBounds,
     moveReferenceBodyId,
     selectedSolidBodyId,
@@ -2993,26 +3144,41 @@ function CadWorkspace({
       return;
     }
 
+    const targetBody = solidBodies.find((body) => body.id === booleanTargetBodyId);
+    const toolBody = solidBodies.find((body) => body.id === booleanToolBodyId);
+    if (!targetBody || !toolBody) {
+      setViewportWarning("Select target and tool bodies");
+      return;
+    }
+
+    const meshData =
+      booleanPreviewMeshData ??
+      buildBooleanMeshData(targetBody, toolBody, booleanOperation);
+    if (!meshData) {
+      setViewportWarning("Boolean operation failed for the selected bodies");
+      return;
+    }
+
+    const resultBodyId = nextSolidBodyId();
+    const booleanFeatureId = nextBooleanFeatureId();
+
     commitSceneMutation(
       `Boolean ${booleanOperation[0].toUpperCase()}${booleanOperation.slice(1)}`,
       (snapshot) => {
-        const targetBody = snapshot.solidBodies.find(
+        const targetSnapshotBody = snapshot.solidBodies.find(
           (body) => body.id === booleanTargetBodyId
         );
-        const toolBody = snapshot.solidBodies.find(
+        const toolSnapshotBody = snapshot.solidBodies.find(
           (body) => body.id === booleanToolBodyId
         );
-        if (!targetBody || !toolBody) return snapshot;
-
-        const meshData = buildBooleanMeshData(targetBody, toolBody, booleanOperation);
-        if (!meshData) return snapshot;
+        if (!targetSnapshotBody || !toolSnapshotBody) return snapshot;
 
         const resultBody: SolidBody = {
-          id: nextSolidBodyId(),
+          id: resultBodyId,
           name: `Body ${snapshot.solidBodies.length + 1}`,
           isVisible: true,
           sourceSketchId: null,
-          sourceBooleanFeatureId: nextBooleanFeatureId(),
+          sourceBooleanFeatureId: booleanFeatureId,
           profileType: "mesh",
           meshData,
           depth: 1,
@@ -3028,10 +3194,10 @@ function CadWorkspace({
           },
         };
         const nextBooleanFeature: BooleanFeature = {
-          id: resultBody.sourceBooleanFeatureId!,
+          id: booleanFeatureId,
           name: `Boolean ${snapshot.booleanFeatures.length + 1}`,
-          targetBodyId: targetBody.id,
-          toolBodyId: toolBody.id,
+          targetBodyId: targetSnapshotBody.id,
+          toolBodyId: toolSnapshotBody.id,
           operation: booleanOperation,
           resultBodyId: resultBody.id,
         };
@@ -3039,7 +3205,7 @@ function CadWorkspace({
         return {
           ...snapshot,
           solidBodies: snapshot.solidBodies.map((body) =>
-            body.id === targetBody.id || body.id === toolBody.id
+            body.id === targetSnapshotBody.id || body.id === toolSnapshotBody.id
               ? { ...body, isVisible: false }
               : body
           ).concat(resultBody),
@@ -3053,15 +3219,25 @@ function CadWorkspace({
     );
     setBooleanModeActive(false);
     setBooleanStep("idle");
+    setBooleanTargetBodyId(null);
+    setBooleanToolBodyId(null);
     setBooleanPreviewMeshData(null);
-    setSelectedSolidBodyId(`solid-body-${solidBodyIdCounterRef.current - 1}`);
+    setSelectedSketchCircleId(null);
+    setSelectedObject(null);
+    setSecondarySelection(null);
+    setSelectedSolidFace(null);
+    setEntitySelection({ kind: "body", bodyId: resultBodyId });
+    setSelectedFeatureNode({ kind: "boolean", id: booleanFeatureId });
+    setSelectedSolidBodyId(resultBodyId);
   }, [
+    booleanPreviewMeshData,
     booleanOperation,
     booleanTargetBodyId,
     booleanToolBodyId,
     commitSceneMutation,
-    nextBooleanFeatureId,
     nextSolidBodyId,
+    nextBooleanFeatureId,
+    solidBodies,
   ]);
 
   const handleSelectSketchFeature = useCallback(
@@ -3158,12 +3334,7 @@ function CadWorkspace({
             onExtrudePreviewDepthChange={handleExtrudePreviewDepthChange}
             onConfirmExtrudePreview={handleConfirmExtrudePreview}
             onCancelExtrudePreview={handleCancelExtrudePreview}
-            moveModeActive={toolsFlow === "move" && !!selectedSolidBodyId}
-            moveDragActive={!!moveDragState}
-            moveHoveredAxis={moveHoveredAxis}
-            moveGizmoTargetBodyId={selectedSolidBodyId}
-            onMoveHoverAxis={setMoveHoveredAxis}
-            onMoveAxisPointerDown={handleMoveAxisPointerDown}
+            transformSubject={transformSubject}
             onDimensionOverlayChange={setDimensionOverlayItems}
             transformMode={transformMode}
             transformTarget={transformTarget}
@@ -3223,10 +3394,13 @@ function CadWorkspace({
         transformFieldDraft={transformFieldDraft}
         onTransformFieldDraftChange={setTransformFieldDraft}
         onStartTransformFieldEdit={(group, axis) => {
-          if (!transformTarget) return;
+          if (!transformTarget || !transformSubject) return;
 
           const axisIndex = axis === "x" ? 0 : axis === "y" ? 1 : 2;
-          const scaleBase = getScaleDisplayBase(selectedPlane, axis);
+          const scaleBase =
+            transformSubject.kind === "plane"
+              ? getScaleDisplayBase(selectedPlane, axis)
+              : 1;
           const source =
             group === "position"
               ? transformTarget.position
@@ -3244,7 +3418,7 @@ function CadWorkspace({
           );
         }}
         onCommitTransformFieldEdit={() => {
-          if (!selectedObject || !transformTarget || !editingTransformField) {
+          if (!transformSubject || !transformTarget || !editingTransformField) {
             setEditingTransformField(null);
             setTransformFieldDraft("");
             return;
@@ -3266,45 +3440,24 @@ function CadWorkspace({
 
           if (editingTransformField.group === "position") {
             const nextPosition = [...transformTarget.position] as Vector3Tuple;
-            nextPosition[axisIndex] = nextValue;
-            commitSceneMutation("Edit Position", (snapshot) => ({
-              ...snapshot,
-              workPlanes: snapshot.workPlanes.map((plane) =>
-                plane.id === selectedObject.objectId
-                  ? { ...plane, position: nextPosition }
-                  : plane
-              ),
-            }));
+            nextPosition[axisIndex] = snapToIncrement(nextValue);
+            commitTransformSubjectMutation("Edit Position", "position", nextPosition);
           }
 
           if (editingTransformField.group === "rotation") {
             const nextRotation = [...transformTarget.rotation] as Vector3Tuple;
             nextRotation[axisIndex] = nextValue;
-            commitSceneMutation("Edit Rotation", (snapshot) => ({
-              ...snapshot,
-              workPlanes: snapshot.workPlanes.map((plane) =>
-                plane.id === selectedObject.objectId
-                  ? { ...plane, rotation: nextRotation }
-                  : plane
-              ),
-            }));
+            commitTransformSubjectMutation("Edit Rotation", "rotation", nextRotation);
           }
 
           if (editingTransformField.group === "scale") {
             const nextScale = [...transformTarget.scale] as Vector3Tuple;
             const scaleBase = getScaleDisplayBase(
-              selectedPlane,
+              transformSubject.kind === "plane" ? selectedPlane : null,
               editingTransformField.axis
             );
             nextScale[axisIndex] = Math.max(MIN_SCALE, nextValue / scaleBase);
-            commitSceneMutation("Edit Scale", (snapshot) => ({
-              ...snapshot,
-              workPlanes: snapshot.workPlanes.map((plane) =>
-                plane.id === selectedObject.objectId
-                  ? { ...plane, scale: nextScale }
-                  : plane
-              ),
-            }));
+            commitTransformSubjectMutation("Edit Scale", "scale", nextScale);
           }
 
           setEditingTransformField(null);
@@ -3433,7 +3586,7 @@ function CadWorkspace({
         onCenterAlign={handleCenterAlignBodies}
         moveReferenceBodyId={moveReferenceBodyId}
         onMoveReferenceBodyChange={setMoveReferenceBodyId}
-        moveDragActive={!!moveDragState}
+        moveDragActive={!!transformDragState && transformDragState.mode === "move"}
       />
       {toolsPieOpen && (
         <ToolsPieMenu center={toolsPieCenter} selectedAction={selectedToolAction} />
