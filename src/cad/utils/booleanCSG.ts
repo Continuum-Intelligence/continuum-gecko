@@ -282,10 +282,25 @@ function geometryFromCsg(polygons: CsgPolygon[]): THREE.BufferGeometry {
   let vertexCursor = 0;
 
   for (const polygon of polygons) {
-    const base = polygon.vertices[0];
-    for (let i = 2; i < polygon.vertices.length; i += 1) {
-      const tri = [base, polygon.vertices[i - 1], polygon.vertices[i]];
-      for (const vertex of tri) {
+    if (polygon.vertices.length < 3) continue;
+
+    const planeNormal = polygon.plane.normal.clone().normalize();
+    const tangent = new THREE.Vector3(1, 0, 0);
+    if (Math.abs(planeNormal.dot(tangent)) > 0.9) tangent.set(0, 1, 0);
+    const bitangent = new THREE.Vector3().crossVectors(planeNormal, tangent).normalize();
+    tangent.crossVectors(bitangent, planeNormal).normalize();
+
+    const projected: THREE.Vector2[] = [];
+    const basePoint = polygon.vertices[0].pos;
+    for (const vertex of polygon.vertices) {
+      const delta = vertex.pos.clone().sub(basePoint);
+      projected.push(new THREE.Vector2(delta.dot(tangent), delta.dot(bitangent)));
+    }
+    const triIndices = THREE.ShapeUtils.triangulateShape(projected, []);
+
+    for (const tri of triIndices) {
+      const triVertices = [polygon.vertices[tri[0]], polygon.vertices[tri[1]], polygon.vertices[tri[2]]];
+      for (const vertex of triVertices) {
         positions.push(vertex.pos.x, vertex.pos.y, vertex.pos.z);
         normals.push(vertex.normal.x, vertex.normal.y, vertex.normal.z);
       }
@@ -333,6 +348,19 @@ function removeDegenerateAndDuplicateTriangles(
     const ac = new THREE.Vector3(cx - ax, cy - ay, cz - az);
     const area2 = ab.clone().cross(ac).lengthSq();
     if (area2 < 1e-12) continue;
+    if (
+      !Number.isFinite(ax) ||
+      !Number.isFinite(ay) ||
+      !Number.isFinite(az) ||
+      !Number.isFinite(bx) ||
+      !Number.isFinite(by) ||
+      !Number.isFinite(bz) ||
+      !Number.isFinite(cx) ||
+      !Number.isFinite(cy) ||
+      !Number.isFinite(cz)
+    ) {
+      continue;
+    }
 
     const aHash = hashVertex(ax, ay, az);
     const bHash = hashVertex(bx, by, bz);
@@ -384,7 +412,63 @@ function cleanBooleanGeometry(geometry: THREE.BufferGeometry): THREE.BufferGeome
   return merged;
 }
 
-function booleanOperation(
+export function cleanMeshGeometry(geometry: THREE.BufferGeometry) {
+  const snapped = snapGeometryVertices(geometry, 1e-5);
+  const dedupedTriangles = removeDegenerateAndDuplicateTriangles(snapped);
+  snapped.dispose();
+  const merged = mergeVertices(dedupedTriangles, 1e-5);
+  dedupedTriangles.dispose();
+
+  merged.deleteAttribute("normal");
+  merged.computeVertexNormals();
+  merged.normalizeNormals();
+  merged.computeBoundingBox();
+  merged.computeBoundingSphere();
+  return merged;
+}
+
+export function validateWatertightGeometry(geometry: THREE.BufferGeometry) {
+  const indexed = geometry.index ? geometry.clone() : mergeVertices(geometry, 1e-5);
+  const index = indexed.getIndex();
+  if (!index) {
+    indexed.dispose();
+    return { isWatertight: false, openEdges: 0, nonManifoldEdges: 0 };
+  }
+
+  const edgeUse = new Map<string, number>();
+  for (let i = 0; i < index.count; i += 3) {
+    const a = index.getX(i);
+    const b = index.getX(i + 1);
+    const c = index.getX(i + 2);
+    const edges: Array<[number, number]> = [
+      [a, b],
+      [b, c],
+      [c, a],
+    ];
+    for (const [v1, v2] of edges) {
+      const min = Math.min(v1, v2);
+      const max = Math.max(v1, v2);
+      const key = `${min}_${max}`;
+      edgeUse.set(key, (edgeUse.get(key) ?? 0) + 1);
+    }
+  }
+
+  let openEdges = 0;
+  let nonManifoldEdges = 0;
+  edgeUse.forEach((count) => {
+    if (count === 1) openEdges += 1;
+    else if (count > 2) nonManifoldEdges += 1;
+  });
+  indexed.dispose();
+
+  return {
+    isWatertight: openEdges === 0 && nonManifoldEdges === 0,
+    openEdges,
+    nonManifoldEdges,
+  };
+}
+
+export function booleanOperation(
   target: THREE.BufferGeometry,
   tool: THREE.BufferGeometry,
   operation: BooleanOperation
@@ -499,7 +583,7 @@ export function meshDataToGeometry(meshData: MeshGeometryData): THREE.BufferGeom
 }
 
 export function geometryToMeshData(geometry: THREE.BufferGeometry): MeshGeometryData {
-  const serialized = geometry.clone();
+  const serialized = cleanMeshGeometry(geometry);
   if (!serialized.getAttribute("normal")) {
     serialized.computeVertexNormals();
   }

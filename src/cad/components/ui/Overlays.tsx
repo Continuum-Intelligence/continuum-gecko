@@ -14,12 +14,14 @@ import type {
   SceneSelection,
   SketchTool,
   ToolPieAction,
+  FilletEdgeId,
   TransformFieldAxis,
   TransformFieldGroup,
   TransformMode,
   TransformTarget,
   WorkPlane,
 } from "../../types";
+import type { DesignReport } from "../../utils/printCheck";
 
 // ============================================
 // RADIAL MENUS
@@ -335,7 +337,7 @@ export const InspectorWindow = memo(function InspectorWindow({
   transformMode: TransformMode;
   onSetTransformMode: (mode: TransformMode) => void;
   selectedPlane: WorkPlane | null;
-  selectedEntityType: "none" | "body" | "plane" | "profile" | "face";
+  selectedEntityType: "none" | "body" | "plane" | "profile" | "face" | "edge";
   selectedEntityLabel: string;
   bodyPositionDraft: { x: string; y: string; z: string };
   onBodyPositionDraftChange: (axis: "x" | "y" | "z", value: string) => void;
@@ -473,7 +475,7 @@ export const InspectorWindow = memo(function InspectorWindow({
             </div>
           </div>
 
-          {selectedEntityType === "body" ? (
+          {selectedEntityType === "body" || selectedEntityType === "edge" ? (
             <>
               <div className="inspector-window__section">
                 <div className="inspector-window__section-title">Transform</div>
@@ -645,6 +647,78 @@ export const ViewportWarning = memo(function ViewportWarning({
   return <div className="viewport-warning">{message}</div>;
 });
 
+export const DesignHealthCard = memo(function DesignHealthCard({
+  visible,
+  bodyName,
+  status,
+  report,
+  durationMs,
+}: {
+  visible: boolean;
+  bodyName: string | null;
+  status: "idle" | "ok" | "warning" | "error";
+  report: DesignReport | null;
+  durationMs: number | null;
+}) {
+  if (!visible || !bodyName) return null;
+
+  return (
+    <aside className={`design-health-card design-health-card--${status}`}>
+      <div className="design-health-card__header">
+        <div>
+          <div className="design-health-card__eyebrow">Inspection</div>
+          <div className="design-health-card__title">Design Health</div>
+        </div>
+        <span className="design-health-card__badge">
+          {status === "error"
+            ? "Needs Fixes"
+            : status === "warning"
+              ? "Needs Review"
+              : status === "ok"
+                ? "Healthy"
+                : "Analyzing"}
+        </span>
+      </div>
+      <div className="design-health-card__body-name">{bodyName}</div>
+
+      {report ? (
+        <>
+          {report.errors.length === 0 && report.warnings.length === 0 ? (
+            <div className="design-health-card__item">✅ Design looks good for printing</div>
+          ) : null}
+          {report.errors.map((item) => (
+            <div key={`error-${item}`} className="design-health-card__item">
+              ❌ {item}
+            </div>
+          ))}
+          {report.warnings.map((item) => (
+            <div key={`warning-${item}`} className="design-health-card__item">
+              ⚠️ {item}
+            </div>
+          ))}
+          {report.ok.slice(0, 2).map((item) => (
+            <div key={`ok-${item}`} className="design-health-card__item design-health-card__item--ok">
+              ✅ {item}
+            </div>
+          ))}
+          <div className="design-health-card__meta">
+            <span>Size</span>
+            <span>{report.metrics.boundingBox.size.map((value) => value.toFixed(1)).join(" × ")} mm</span>
+          </div>
+          {durationMs !== null ? (
+            <div className="design-health-card__meta">
+              <span>Runtime</span>
+              <span>{durationMs.toFixed(1)} ms</span>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="design-health-card__item">Analyzing selected body...</div>
+      )}
+    </aside>
+  );
+});
+
 export const ToolsWindow = memo(function ToolsWindow({
   collapsed,
   onToggleCollapsed,
@@ -653,6 +727,8 @@ export const ToolsWindow = memo(function ToolsWindow({
   onOpenExtrudeFlow,
   onOpenBooleanFlow,
   onOpenMoveFlow,
+  onOpenFilletFlow,
+  onOpenHoleFlow,
   onBackToToolsFlow,
   onDoneSketchFlow,
   sketchPlaneSelectionMode,
@@ -707,17 +783,36 @@ export const ToolsWindow = memo(function ToolsWindow({
   onSnapToOrigin,
   onDropToGround,
   onCenterAlign,
+  selectedFilletFeatureId,
+  selectedBodyFillets,
+  onSelectBodyFillet,
+  onUpdateSelectedFilletRadius,
+  selectedSolidEdge,
+  filletRadiusDraft,
+  filletPreviewRadius,
+  filletMaxRadius,
+  onFilletRadiusDraftChange,
+  onApplyFillet,
+  holeDiameterDraft,
+  holeDepthDraft,
+  holePlacementReady,
+  holePlacementLocked,
+  onHoleDiameterDraftChange,
+  onHoleDepthDraftChange,
+  onApplyHole,
   moveReferenceBodyId,
   onMoveReferenceBodyChange,
   moveDragActive,
 }: {
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  toolsFlow: "home" | "sketch" | "extrude" | "boolean" | "move";
+  toolsFlow: "home" | "sketch" | "extrude" | "boolean" | "move" | "fillet" | "hole";
   onOpenSketchFlow: () => void;
   onOpenExtrudeFlow: () => void;
   onOpenBooleanFlow: () => void;
   onOpenMoveFlow: () => void;
+  onOpenFilletFlow: () => void;
+  onOpenHoleFlow: () => void;
   onBackToToolsFlow: () => void;
   onDoneSketchFlow: () => void;
   sketchPlaneSelectionMode: boolean;
@@ -777,6 +872,29 @@ export const ToolsWindow = memo(function ToolsWindow({
   onSnapToOrigin: () => void;
   onDropToGround: () => void;
   onCenterAlign: () => void;
+  selectedFilletFeatureId: string | null;
+  selectedBodyFillets: Array<{
+    id: string;
+    name: string;
+    edgeId: FilletEdgeId;
+    radius: number;
+    status: "ok" | "invalid";
+  }>;
+  onSelectBodyFillet: (featureId: string) => void;
+  onUpdateSelectedFilletRadius: () => void;
+  selectedSolidEdge: { bodyId: string; edgeId: FilletEdgeId } | null;
+  filletRadiusDraft: string;
+  filletPreviewRadius: number | null;
+  filletMaxRadius: number | null;
+  onFilletRadiusDraftChange: (value: string) => void;
+  onApplyFillet: () => void;
+  holeDiameterDraft: string;
+  holeDepthDraft: string;
+  holePlacementReady: boolean;
+  holePlacementLocked: boolean;
+  onHoleDiameterDraftChange: (value: string) => void;
+  onHoleDepthDraftChange: (value: string) => void;
+  onApplyHole: () => void;
   moveReferenceBodyId: string | null;
   onMoveReferenceBodyChange: (id: string | null) => void;
   moveDragActive: boolean;
@@ -817,8 +935,12 @@ export const ToolsWindow = memo(function ToolsWindow({
                 <span>
                   {selectedEntity?.kind === "profile"
                     ? "Profile"
+                    : selectedEntity?.kind === "sketch-curve"
+                      ? "Curve"
                     : selectedEntity?.kind === "face"
                       ? `Face (${selectedEntity.faceId})`
+                    : selectedEntity?.kind === "edge"
+                      ? "Edge"
                       : selectedEntity?.kind === "body"
                         ? "Body"
                         : "None"}
@@ -851,6 +973,20 @@ export const ToolsWindow = memo(function ToolsWindow({
                 type="button"
               >
                 Move
+              </button>
+              <button
+                className="tools-window__action-button tools-window__action-button--primary"
+                onClick={onOpenFilletFlow}
+                type="button"
+              >
+                Fillet
+              </button>
+              <button
+                className="tools-window__action-button tools-window__action-button--primary"
+                onClick={onOpenHoleFlow}
+                type="button"
+              >
+                Hole
               </button>
               <button
                 className="tools-window__action-button"
@@ -936,6 +1072,9 @@ export const ToolsWindow = memo(function ToolsWindow({
                 {activeSketchTool === "rectangle"
                   ? "Drag from origin center to define width and height."
                   : "Drag from plane origin to define radius."}
+              </div>
+              <div className="tools-window__hint">
+                Select a curve/edge, then press D to edit dimensions.
               </div>
               <div className="tools-window__profile-list">
                 {sketchProfiles.length === 0 ? (
@@ -1366,6 +1505,163 @@ export const ToolsWindow = memo(function ToolsWindow({
               </button>
             </div>
           ) : null}
+
+          {toolsFlow === "fillet" ? (
+            <div className="tools-window__section">
+              <div className="tools-window__flow-row">
+                <div className="tools-window__section-title">Fillet</div>
+                <button
+                  className="tools-window__flow-done"
+                  onClick={onBackToToolsFlow}
+                  type="button"
+                >
+                  Back
+                </button>
+              </div>
+              <div className="tools-window__meta-row">
+                <span>Selected Body</span>
+                <span>
+                  {selectedSolidBodyId
+                    ? bodyItems.find((body) => body.id === selectedSolidBodyId)?.name ?? "None"
+                    : "None"}
+                </span>
+              </div>
+              <div className="tools-window__meta-row">
+                <span>Selected Edge</span>
+                <span>{selectedSolidEdge?.edgeId ?? "Pick an edge in viewport"}</span>
+              </div>
+              <div className="tools-window__section-subtitle">Body Fillets</div>
+              <div className="tools-window__list">
+                {selectedBodyFillets.length === 0 ? (
+                  <div className="tools-window__empty">No fillets on this body yet</div>
+                ) : (
+                  selectedBodyFillets.map((feature) => (
+                    <button
+                      key={feature.id}
+                      className={`tools-window__list-item${
+                        selectedFilletFeatureId === feature.id
+                          ? " tools-window__list-item--active"
+                          : ""
+                      }`}
+                      onClick={() => onSelectBodyFillet(feature.id)}
+                      type="button"
+                    >
+                      <span>{feature.name}</span>
+                      <span>{`${feature.radius.toFixed(2)} mm`}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+              <label className="tools-window__stacked-input">
+                Radius (mm)
+                <input
+                  inputMode="decimal"
+                  min={0.01}
+                  step={0.1}
+                  type="number"
+                  value={filletRadiusDraft}
+                  onChange={(event) => onFilletRadiusDraftChange(event.target.value)}
+                />
+              </label>
+              <label className="tools-window__stacked-input">
+                Drag Radius
+                <input
+                  min={0.01}
+                  max={filletMaxRadius ?? 10}
+                  step={0.01}
+                  type="range"
+                  value={Math.max(0.01, Number(filletRadiusDraft) || 0.01)}
+                  onChange={(event) => onFilletRadiusDraftChange(event.target.value)}
+                />
+              </label>
+              <div className="tools-window__meta-row">
+                <span>Preview Radius</span>
+                <span>
+                  {filletPreviewRadius !== null ? `${filletPreviewRadius.toFixed(2)} mm` : "--"}
+                </span>
+              </div>
+              <div className="tools-window__meta-row">
+                <span>Max Radius</span>
+                <span>{filletMaxRadius !== null ? `${filletMaxRadius.toFixed(2)} mm` : "--"}</span>
+              </div>
+              <button
+                className="tools-window__action-button tools-window__action-button--primary"
+                onClick={selectedFilletFeatureId ? onUpdateSelectedFilletRadius : onApplyFillet}
+                type="button"
+              >
+                {selectedFilletFeatureId ? "Update Selected Fillet" : "Apply Fillet"}
+              </button>
+              <button
+                className="tools-window__action-button"
+                onClick={onBackToToolsFlow}
+                type="button"
+              >
+                Done
+              </button>
+            </div>
+          ) : null}
+
+          {toolsFlow === "hole" ? (
+            <div className="tools-window__section">
+              <div className="tools-window__flow-row">
+                <div className="tools-window__section-title">Hole</div>
+                <button
+                  className="tools-window__flow-done"
+                  onClick={onBackToToolsFlow}
+                  type="button"
+                >
+                  Done
+                </button>
+              </div>
+              <div className="tools-window__meta-row">
+                <span>Selected Face</span>
+                <span>
+                  {selectedSolidFace
+                    ? `${bodyItems.find((body) => body.id === selectedSolidFace.bodyId)?.name ?? "Body"}:${selectedSolidFace.faceId}`
+                    : "Pick a face"}
+                </span>
+              </div>
+              <div className="tools-window__meta-row">
+                <span>Placement</span>
+                <span>
+                  {holePlacementLocked
+                    ? "Center locked"
+                    : holePlacementReady
+                      ? "Tracking cursor on face"
+                      : "Move cursor on selected face"}
+                </span>
+              </div>
+              <label className="tools-window__stacked-input">
+                Diameter (mm)
+                <input
+                  inputMode="decimal"
+                  min={0.1}
+                  step={0.1}
+                  type="number"
+                  value={holeDiameterDraft}
+                  onChange={(event) => onHoleDiameterDraftChange(event.target.value)}
+                />
+              </label>
+              <label className="tools-window__stacked-input">
+                Depth (mm)
+                <input
+                  inputMode="decimal"
+                  min={0.1}
+                  step={0.1}
+                  type="number"
+                  value={holeDepthDraft}
+                  onChange={(event) => onHoleDepthDraftChange(event.target.value)}
+                />
+              </label>
+              <button
+                className="tools-window__action-button tools-window__action-button--primary"
+                onClick={onApplyHole}
+                type="button"
+              >
+                Apply Hole
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
     </>
@@ -1452,11 +1748,14 @@ export const HistoryWindow = memo(function HistoryWindow({
   collapsed,
   onToggleCollapsed,
   featureTree,
+  selectedFeatureDetails,
   selectedFeatureNode,
   selectedProfileId,
   onSelectSketchFeature,
   onSelectExtrudeFeature,
   onSelectBooleanFeature,
+  onSelectFilletFeature,
+  onSelectHoleFeature,
   onSelectFeatureProfile,
   historyEntries,
   historyIndex,
@@ -1469,6 +1768,9 @@ export const HistoryWindow = memo(function HistoryWindow({
         kind: "sketch";
         id: string;
         name: string;
+        order: number;
+        dependencies: string[];
+        parameterSummary: string;
         children: { id: string; name: string }[];
       }
     | {
@@ -1476,19 +1778,55 @@ export const HistoryWindow = memo(function HistoryWindow({
         id: string;
         name: string;
         sourceProfileId: string;
+        order: number;
+        dependencies: string[];
+        parameterSummary: string;
       }
     | {
         kind: "boolean";
         id: string;
         name: string;
         operation: BooleanOperation;
+        order: number;
+        dependencies: string[];
+        parameterSummary: string;
+      }
+    | {
+        kind: "fillet";
+        id: string;
+        name: string;
+        bodyId: string;
+        radius: number;
+        order: number;
+        dependencies: string[];
+        parameterSummary: string;
+      }
+    | {
+        kind: "hole";
+        id: string;
+        name: string;
+        bodyId: string;
+        diameter: number;
+        depth: number;
+        order: number;
+        dependencies: string[];
+        parameterSummary: string;
       }
   >;
-  selectedFeatureNode: { kind: "sketch" | "extrude" | "boolean"; id: string } | null;
+  selectedFeatureDetails: {
+    name: string;
+    kind: "sketch" | "extrude" | "boolean" | "fillet" | "hole";
+    order: number;
+    dependencies: string[];
+    parameterSummary: string;
+  } | null;
+  selectedFeatureNode: { kind: "sketch" | "extrude" | "boolean" | "fillet" | "hole"; id: string } | null;
   selectedProfileId: string | null;
   onSelectSketchFeature: (featureId: string) => void;
   onSelectExtrudeFeature: (featureId: string) => void;
   onSelectBooleanFeature: (featureId: string) => void;
+  onSelectFilletFeature: (featureId: string) => void;
+  onSelectHoleFeature: (featureId: string) => void;
   onSelectFeatureProfile: (profileId: string) => void;
   historyEntries: SceneHistoryEntry[];
   historyIndex: number;
@@ -1523,6 +1861,31 @@ export const HistoryWindow = memo(function HistoryWindow({
 
         <div className="history-window__body">
           <div className="history-window__section-title">Features</div>
+          {selectedFeatureDetails ? (
+            <div className="history-window__meta-card">
+              <div className="history-window__meta-title">{selectedFeatureDetails.name}</div>
+              <div className="history-window__meta-row">
+                <span>Type</span>
+                <span>{selectedFeatureDetails.kind}</span>
+              </div>
+              <div className="history-window__meta-row">
+                <span>Order</span>
+                <span>{selectedFeatureDetails.order}</span>
+              </div>
+              <div className="history-window__meta-row">
+                <span>Params</span>
+                <span>{selectedFeatureDetails.parameterSummary}</span>
+              </div>
+              <div className="history-window__meta-row">
+                <span>Depends</span>
+                <span>
+                  {selectedFeatureDetails.dependencies.length > 0
+                    ? selectedFeatureDetails.dependencies.join(", ")
+                    : "None"}
+                </span>
+              </div>
+            </div>
+          ) : null}
           {featureTree.length === 0 ? (
             <div className="history-window__empty">No features yet</div>
           ) : (
@@ -1530,17 +1893,23 @@ export const HistoryWindow = memo(function HistoryWindow({
               feature.kind === "sketch" ? (
                 <div key={feature.id} className="history-window__feature-group">
                   <button
-                    className={`history-window__feature${
-                      selectedFeatureNode?.kind === "sketch" &&
-                      selectedFeatureNode.id === feature.id
-                        ? " history-window__feature--active"
-                        : ""
-                    }`}
-                    onClick={() => onSelectSketchFeature(feature.id)}
-                    type="button"
-                  >
-                    {feature.name}
-                  </button>
+                  className={`history-window__feature${
+                    selectedFeatureNode?.kind === "sketch" &&
+                    selectedFeatureNode.id === feature.id
+                      ? " history-window__feature--active"
+                      : ""
+                  }`}
+                  title={
+                    feature.dependencies.length > 0
+                      ? `Depends on: ${feature.dependencies.join(", ")}`
+                      : "No dependencies"
+                  }
+                  onClick={() => onSelectSketchFeature(feature.id)}
+                  type="button"
+                >
+                  <span>{feature.name}</span>
+                  <span>{`#${feature.order}`}</span>
+                </button>
                   {feature.children.map((profile) => (
                     <button
                       key={profile.id}
@@ -1565,10 +1934,56 @@ export const HistoryWindow = memo(function HistoryWindow({
                       ? " history-window__feature--active"
                       : ""
                   }`}
+                  title={
+                    feature.dependencies.length > 0
+                      ? `Depends on: ${feature.dependencies.join(", ")}`
+                      : "No dependencies"
+                  }
                   onClick={() => onSelectExtrudeFeature(feature.id)}
                   type="button"
                 >
-                  {feature.name}
+                  <span>{feature.name}</span>
+                  <span>{feature.parameterSummary}</span>
+                </button>
+              ) : feature.kind === "fillet" ? (
+                <button
+                  key={feature.id}
+                  className={`history-window__feature${
+                    selectedFeatureNode?.kind === "fillet" &&
+                    selectedFeatureNode.id === feature.id
+                      ? " history-window__feature--active"
+                      : ""
+                  }`}
+                  title={
+                    feature.dependencies.length > 0
+                      ? `Depends on: ${feature.dependencies.join(", ")}`
+                      : "No dependencies"
+                  }
+                  onClick={() => onSelectFilletFeature(feature.id)}
+                  type="button"
+                >
+                  <span>{feature.name}</span>
+                  <span>{`${feature.radius.toFixed(2)} mm`}</span>
+                </button>
+              ) : feature.kind === "hole" ? (
+                <button
+                  key={feature.id}
+                  className={`history-window__feature${
+                    selectedFeatureNode?.kind === "hole" &&
+                    selectedFeatureNode.id === feature.id
+                      ? " history-window__feature--active"
+                      : ""
+                  }`}
+                  title={
+                    feature.dependencies.length > 0
+                      ? `Depends on: ${feature.dependencies.join(", ")}`
+                      : "No dependencies"
+                  }
+                  onClick={() => onSelectHoleFeature(feature.id)}
+                  type="button"
+                >
+                  <span>{feature.name}</span>
+                  <span>{`${feature.diameter.toFixed(1)} x ${feature.depth.toFixed(1)}`}</span>
                 </button>
               ) : (
                 <button
@@ -1579,10 +1994,16 @@ export const HistoryWindow = memo(function HistoryWindow({
                       ? " history-window__feature--active"
                       : ""
                   }`}
+                  title={
+                    feature.dependencies.length > 0
+                      ? `Depends on: ${feature.dependencies.join(", ")}`
+                      : "No dependencies"
+                  }
                   onClick={() => onSelectBooleanFeature(feature.id)}
                   type="button"
                 >
-                  {feature.name} ({feature.operation})
+                  <span>{feature.name}</span>
+                  <span>{feature.operation}</span>
                 </button>
               )
             )

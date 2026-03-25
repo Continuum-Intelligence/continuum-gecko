@@ -356,6 +356,61 @@ body,
   cursor: default;
 }
 
+.sketch-dimension-editor {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  width: 230px;
+  padding: 12px;
+  border: 1px solid #464a51;
+  background:
+    linear-gradient(180deg, rgba(57, 57, 63, 0.26), rgba(21, 21, 24, 0)),
+    rgba(22, 22, 25, 0.94);
+  color: #f2f3f5;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.2);
+  z-index: 18;
+}
+
+.sketch-dimension-editor__title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.sketch-dimension-editor__subtitle {
+  margin-top: 4px;
+  margin-bottom: 10px;
+  color: #c9cdd4;
+  font-size: 12px;
+}
+
+.sketch-dimension-editor__grid {
+  display: grid;
+  gap: 8px;
+}
+
+.sketch-dimension-editor__grid label {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  color: #d4d7dd;
+}
+
+.sketch-dimension-editor__grid input {
+  border: 1px solid #555b64;
+  background: rgba(255, 255, 255, 0.06);
+  color: #f4f6f8;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.sketch-dimension-editor__hint {
+  margin-top: 10px;
+  font-size: 11px;
+  color: #98a1ac;
+}
+
 .inspector-window {
   position: absolute;
   top: 0;
@@ -668,6 +723,15 @@ body,
   letter-spacing: 0.05em;
 }
 
+.tools-window__section-subtitle {
+  margin: 10px 0 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #9aa4b2;
+}
+
 .tools-window__flow-row {
   display: flex;
   align-items: center;
@@ -755,6 +819,48 @@ body,
   border-color: #7c899b;
   background: rgba(74, 86, 105, 0.34);
   color: #f3f7fb;
+}
+
+.tools-window__list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tools-window__list-item {
+  appearance: none;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid #4b4b51;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+  color: #dce2ea;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tools-window__list-item:hover {
+  border-color: #687283;
+  background: rgba(71, 85, 105, 0.24);
+}
+
+.tools-window__list-item--active {
+  border-color: #8dd1ff;
+  background: rgba(65, 103, 139, 0.28);
+  color: #f3f7fb;
+}
+
+.tools-window__empty {
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  padding: 7px 8px;
+  color: #9ba5b3;
+  font-size: 11px;
 }
 
 .tools-window__action-button {
@@ -883,6 +989,34 @@ body,
   color: #b8bec8;
   letter-spacing: 0.05em;
   text-transform: uppercase;
+}
+
+.history-window__meta-card {
+  margin-bottom: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.history-window__meta-title {
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #eef2f7;
+}
+
+.history-window__meta-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  color: #c6ced9;
+}
+
+.history-window__meta-row + .history-window__meta-row {
+  margin-top: 4px;
 }
 
 .history-window__empty {
@@ -1442,4 +1576,121 @@ body,
   color: #ffffff;
   border-color: rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.08);
+}
+
+.design-health-card {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  width: min(360px, calc(100vw - 44px));
+  padding: 14px 14px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.02)),
+    rgba(18, 22, 28, 0.82);
+  color: #eaf0f8;
+  box-shadow:
+    0 20px 36px rgba(7, 10, 14, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(10px);
+  z-index: 34;
+  pointer-events: none;
+  animation: designHealthCardIn 220ms ease;
+}
+
+.design-health-card--warning {
+  border-color: rgba(224, 176, 95, 0.32);
+}
+
+.design-health-card--error {
+  border-color: rgba(209, 101, 101, 0.42);
+  box-shadow:
+    0 20px 36px rgba(44, 12, 12, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.design-health-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.design-health-card__eyebrow {
+  color: rgba(220, 227, 237, 0.76);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.design-health-card__title {
+  margin-top: 4px;
+  color: #f4f7fb;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.design-health-card__badge {
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.07);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(240, 245, 252, 0.88);
+}
+
+.design-health-card__body-name {
+  margin-top: 10px;
+  margin-bottom: 10px;
+  color: rgba(235, 241, 250, 0.86);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.design-health-card__item {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #edf2f9;
+}
+
+.design-health-card__item + .design-health-card__item {
+  margin-top: 6px;
+}
+
+.design-health-card__item--ok {
+  color: rgba(222, 244, 228, 0.92);
+}
+
+.design-health-card__meta {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: rgba(205, 216, 230, 0.82);
+  font-size: 11px;
+}
+
+@keyframes designHealthCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 900px) {
+  .design-health-card {
+    right: 14px;
+    bottom: 14px;
+    width: min(340px, calc(100vw - 28px));
+  }
 }

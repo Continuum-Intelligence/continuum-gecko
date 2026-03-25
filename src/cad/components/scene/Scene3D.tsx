@@ -29,6 +29,7 @@ import type {
   BodyFaceId,
   DimensionOverlayItem,
   DistanceDimension,
+  FilletEdgeId,
   SketchCircle,
   SketchRectangle,
   SceneSelection,
@@ -46,6 +47,8 @@ import type {
 import { PlaneSketches } from "./PlaneSketches";
 import { EXPORTABLE_GEOMETRY_FLAG } from "../../../utils/exportSTL";
 import { meshDataToGeometry } from "../../utils/booleanCSG";
+import { DESIGN_HEALTH_BODY_ID_FLAG } from "../../utils/printCheck";
+import { getRectBodyEdges, isFilletCapableBody } from "../../utils/fillet";
 
 // ============================================
 // CAMERA SYSTEM
@@ -562,13 +565,21 @@ const CircleCurve = memo(function CircleCurve({
 const SketchCircleItem = memo(function SketchCircleItem({
   circle,
   selected,
+  curveSelected,
   extrudeModeArmed,
   onSelectSketchCircle,
+  onSelectSketchCurve,
 }: {
   circle: SketchCircle;
   selected: boolean;
+  curveSelected: boolean;
   extrudeModeArmed: boolean;
   onSelectSketchCircle: (id: string | null) => void;
+  onSelectSketchCurve: (selection: {
+    profileId: string;
+    profileType: "circle";
+    curveKind: "circle";
+  }, additive: boolean) => void;
 }) {
   const accentRingGeometry = useMemo(
     () =>
@@ -611,7 +622,7 @@ const SketchCircleItem = memo(function SketchCircleItem({
       <group position={[circle.center[0], circle.center[1], 0]}>
         <CircleCurve
           radius={circle.radius}
-          color={selected ? "#0f172a" : "#1f2937"}
+          color={curveSelected ? "#020617" : selected ? "#0f172a" : "#1f2937"}
           opacity={selected ? 1 : 0.92}
           zOffset={0.085}
         />
@@ -652,13 +663,20 @@ const SketchCircleItem = memo(function SketchCircleItem({
           geometry={pickRingGeometry}
           onClick={(event) => {
             event.stopPropagation();
-            onSelectSketchCircle(circle.id);
+            onSelectSketchCurve(
+              {
+                profileId: circle.id,
+                profileType: "circle",
+                curveKind: "circle",
+              },
+              event.shiftKey
+            );
           }}
         >
           <meshBasicMaterial
             transparent
-            opacity={selected ? 0.16 : 0.06}
-            color={selected ? "#e2e8f0" : "#cbd5e1"}
+            opacity={curveSelected ? 0.24 : selected ? 0.12 : 0.03}
+            color={curveSelected ? "#111827" : selected ? "#e2e8f0" : "#cbd5e1"}
             side={THREE.DoubleSide}
             depthWrite={false}
           />
@@ -671,13 +689,25 @@ const SketchCircleItem = memo(function SketchCircleItem({
 const SketchCircles = memo(function SketchCircles({
   circles,
   selectedSketchCircleId,
+  selectedCurveSelections,
   extrudeModeArmed,
   onSelectSketchCircle,
+  onSelectSketchCurve,
 }: {
   circles: SketchCircle[];
   selectedSketchCircleId: string | null;
+  selectedCurveSelections: Array<{
+    profileId: string;
+    curveKind: "circle" | "rectangle-edge";
+    edgeId?: "top" | "right" | "bottom" | "left";
+  }>;
   extrudeModeArmed: boolean;
   onSelectSketchCircle: (id: string | null) => void;
+  onSelectSketchCurve: (selection: {
+    profileId: string;
+    profileType: "circle";
+    curveKind: "circle";
+  }, additive: boolean) => void;
 }) {
   return (
     <>
@@ -686,8 +716,13 @@ const SketchCircles = memo(function SketchCircles({
           key={circle.id}
           circle={circle}
           selected={selectedSketchCircleId === circle.id}
+          curveSelected={selectedCurveSelections.some(
+            (selection) =>
+              selection.profileId === circle.id && selection.curveKind === "circle"
+          )}
           extrudeModeArmed={extrudeModeArmed}
           onSelectSketchCircle={onSelectSketchCircle}
+          onSelectSketchCurve={onSelectSketchCurve}
         />
       ))}
     </>
@@ -742,13 +777,25 @@ const RectangleCurve = memo(function RectangleCurve({
 const SketchRectangleItem = memo(function SketchRectangleItem({
   rectangle,
   selected,
+  selectedEdges,
   extrudeModeArmed,
   onSelectSketchCircle,
+  onSelectSketchCurve,
 }: {
   rectangle: SketchRectangle;
   selected: boolean;
+  selectedEdges: Array<"top" | "right" | "bottom" | "left">;
   extrudeModeArmed: boolean;
   onSelectSketchCircle: (id: string | null) => void;
+  onSelectSketchCurve: (
+    selection: {
+      profileId: string;
+      profileType: "rectangle";
+      curveKind: "rectangle-edge";
+      edgeId: "top" | "right" | "bottom" | "left";
+    },
+    additive: boolean
+  ) => void;
 }) {
   const fillGeometry = useMemo(
     () =>
@@ -776,10 +823,57 @@ const SketchRectangleItem = memo(function SketchRectangleItem({
         <RectangleCurve
           width={rectangle.width}
           height={rectangle.height}
-          color={selected ? "#0f172a" : "#1f2937"}
+          color={selectedEdges.length > 0 ? "#020617" : selected ? "#0f172a" : "#1f2937"}
           opacity={selected ? 1 : 0.92}
           zOffset={0.085}
         />
+        {(["top", "right", "bottom", "left"] as const).map((edgeId) => {
+          const halfW = Math.max(0.1, rectangle.width) / 2;
+          const halfH = Math.max(0.1, rectangle.height) / 2;
+          const isHorizontal = edgeId === "top" || edgeId === "bottom";
+          const selectedEdge = selectedEdges.includes(edgeId);
+          const position: Vector3Tuple =
+            edgeId === "top"
+              ? [0, halfH, 0.1]
+              : edgeId === "bottom"
+                ? [0, -halfH, 0.1]
+                : edgeId === "left"
+                  ? [-halfW, 0, 0.1]
+                  : [halfW, 0, 0.1];
+
+          return (
+            <mesh
+              key={`${rectangle.id}-${edgeId}`}
+              position={position}
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelectSketchCurve(
+                  {
+                    profileId: rectangle.id,
+                    profileType: "rectangle",
+                    curveKind: "rectangle-edge",
+                    edgeId,
+                  },
+                  event.shiftKey
+                );
+              }}
+            >
+              <boxGeometry
+                args={[
+                  isHorizontal ? Math.max(0.3, rectangle.width) : 1.2,
+                  isHorizontal ? 1.2 : Math.max(0.3, rectangle.height),
+                  0.2,
+                ]}
+              />
+              <meshBasicMaterial
+                transparent
+                opacity={selectedEdge ? 0.24 : 0.03}
+                color={selectedEdge ? "#111827" : "#cbd5e1"}
+                depthWrite={false}
+              />
+            </mesh>
+          );
+        })}
         <mesh
           geometry={fillGeometry}
           onClick={(event) => {
@@ -803,13 +897,29 @@ const SketchRectangleItem = memo(function SketchRectangleItem({
 const SketchRectangles = memo(function SketchRectangles({
   rectangles,
   selectedSketchCircleId,
+  selectedCurveSelections,
   extrudeModeArmed,
   onSelectSketchCircle,
+  onSelectSketchCurve,
 }: {
   rectangles: SketchRectangle[];
   selectedSketchCircleId: string | null;
+  selectedCurveSelections: Array<{
+    profileId: string;
+    curveKind: "circle" | "rectangle-edge";
+    edgeId?: "top" | "right" | "bottom" | "left";
+  }>;
   extrudeModeArmed: boolean;
   onSelectSketchCircle: (id: string | null) => void;
+  onSelectSketchCurve: (
+    selection: {
+      profileId: string;
+      profileType: "rectangle";
+      curveKind: "rectangle-edge";
+      edgeId: "top" | "right" | "bottom" | "left";
+    },
+    additive: boolean
+  ) => void;
 }) {
   return (
     <>
@@ -818,8 +928,17 @@ const SketchRectangles = memo(function SketchRectangles({
           key={rectangle.id}
           rectangle={rectangle}
           selected={selectedSketchCircleId === rectangle.id}
+          selectedEdges={selectedCurveSelections
+            .filter(
+              (selection) =>
+                selection.profileId === rectangle.id &&
+                selection.curveKind === "rectangle-edge" &&
+                selection.edgeId
+            )
+            .map((selection) => selection.edgeId as "top" | "right" | "bottom" | "left")}
           extrudeModeArmed={extrudeModeArmed}
           onSelectSketchCircle={onSelectSketchCircle}
+          onSelectSketchCurve={onSelectSketchCurve}
         />
       ))}
     </>
@@ -1025,84 +1144,32 @@ const BooleanPreviewMesh = memo(function BooleanPreviewMesh({
   );
 });
 
-function buildCadFeatureEdges(
-  geometry: THREE.BufferGeometry,
-  creaseAngleDeg: number
-): THREE.BufferGeometry {
-  const indexed = geometry.index ? geometry : geometry.toNonIndexed();
-  const position = indexed.getAttribute("position");
-  const index = indexed.getIndex();
-  const indices = index
-    ? Array.from(index.array as Uint16Array | Uint32Array)
-    : Array.from({ length: position.count }, (_, i) => i);
+function applyHealthTint(
+  color: string,
+  status: "idle" | "ok" | "warning" | "error",
+  selected: boolean
+) {
+  if (status === "idle" || status === "ok") return color;
+  const base = new THREE.Color(color);
+  const tint = new THREE.Color(status === "error" ? "#cf5656" : "#bea15a");
+  const intensity = status === "error" ? (selected ? 0.28 : 0.2) : selected ? 0.2 : 0.14;
+  base.lerp(tint, intensity);
+  return `#${base.getHexString()}`;
+}
 
-  const normal = new THREE.Vector3();
-  const vA = new THREE.Vector3();
-  const vB = new THREE.Vector3();
-  const vC = new THREE.Vector3();
-  const edgeMap = new Map<string, { a: number; b: number; normals: THREE.Vector3[] }>();
+function getHealthEmissive(status: "idle" | "ok" | "warning" | "error") {
+  if (status === "error") return "#3a1010";
+  if (status === "warning") return "#352612";
+  return "#000000";
+}
 
-  for (let i = 0; i < indices.length; i += 3) {
-    const a = indices[i];
-    const b = indices[i + 1];
-    const c = indices[i + 2];
-
-    vA.fromBufferAttribute(position, a);
-    vB.fromBufferAttribute(position, b);
-    vC.fromBufferAttribute(position, c);
-    normal.copy(vC).sub(vB).cross(vA.clone().sub(vB));
-    if (normal.lengthSq() < 1e-14) continue;
-    normal.normalize();
-
-    const triEdges: Array<[number, number]> = [
-      [a, b],
-      [b, c],
-      [c, a],
-    ];
-    for (const [s, t] of triEdges) {
-      const min = Math.min(s, t);
-      const max = Math.max(s, t);
-      const key = `${min}_${max}`;
-      const existing = edgeMap.get(key);
-      if (existing) {
-        existing.normals.push(normal.clone());
-      } else {
-        edgeMap.set(key, { a: min, b: max, normals: [normal.clone()] });
-      }
-    }
-  }
-
-  const thresholdDot = Math.cos(THREE.MathUtils.degToRad(creaseAngleDeg));
-  const linePositions: number[] = [];
-
-  edgeMap.forEach((entry) => {
-    const normals = entry.normals;
-    let isFeature = false;
-    if (normals.length === 1) {
-      isFeature = true;
-    } else {
-      let minDot = 1;
-      for (let i = 0; i < normals.length; i += 1) {
-        for (let j = i + 1; j < normals.length; j += 1) {
-          minDot = Math.min(minDot, normals[i].dot(normals[j]));
-        }
-      }
-      if (minDot < thresholdDot) isFeature = true;
-    }
-    if (!isFeature) return;
-
-    vA.fromBufferAttribute(position, entry.a);
-    vB.fromBufferAttribute(position, entry.b);
-    linePositions.push(vA.x, vA.y, vA.z, vB.x, vB.y, vB.z);
-  });
-
-  const edgeGeometry = new THREE.BufferGeometry();
-  edgeGeometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(linePositions, 3)
-  );
-  if (!geometry.index) indexed.dispose();
-  return edgeGeometry;
+function getHealthEmissiveIntensity(
+  status: "idle" | "ok" | "warning" | "error",
+  selected: boolean
+) {
+  if (status === "error") return selected ? 0.24 : 0.14;
+  if (status === "warning") return selected ? 0.16 : 0.09;
+  return 0;
 }
 
 const SolidBodyMesh = memo(function SolidBodyMesh({
@@ -1110,15 +1177,37 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
   selected,
   booleanRole,
   selectedFaceId,
+  selectedEdgeId,
   onSelectSolidBody,
   onSelectSolidFace,
+  onHoverSolidFace,
+  onSelectSolidEdge,
+  healthStatus,
+  filletModeActive,
+  holeModeActive,
+  previewMeshData,
 }: {
   body: SolidBody;
   selected: boolean;
   booleanRole: "base" | "tool" | null;
   selectedFaceId: BodyFaceId | null;
+  selectedEdgeId: FilletEdgeId | null;
   onSelectSolidBody: (id: string | null) => void;
-  onSelectSolidFace: (bodyId: string, faceId: BodyFaceId) => void;
+  onSelectSolidFace: (
+    bodyId: string,
+    faceId: BodyFaceId,
+    hit?: { point: Vector3Tuple; normal: Vector3Tuple }
+  ) => void;
+  onHoverSolidFace: (
+    bodyId: string,
+    faceId: BodyFaceId,
+    hit?: { point: Vector3Tuple; normal: Vector3Tuple }
+  ) => void;
+  onSelectSolidEdge: (bodyId: string, edgeId: FilletEdgeId) => void;
+  healthStatus: "idle" | "ok" | "warning" | "error";
+  filletModeActive: boolean;
+  holeModeActive: boolean;
+  previewMeshData: SolidBody["meshData"] | null;
 }) {
   const bodyTransform = body.transform ?? {
     position: [0, 0, 0] as Vector3Tuple,
@@ -1126,20 +1215,9 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
     scale: [1, 1, 1] as Vector3Tuple,
   };
   const sideGeometry = useMemo(() => {
-    if (body.profileType === "mesh" && body.meshData) {
-      return meshDataToGeometry(body.meshData);
+    if (previewMeshData) {
+      return meshDataToGeometry(previewMeshData);
     }
-    if (body.profileType === "rectangle") {
-      return new THREE.BoxGeometry(
-        Math.max(0.1, body.width ?? 0.1),
-        Math.max(0.1, body.height ?? 0.1),
-        body.depth
-      );
-    }
-    const radius = Math.max(0.1, body.radius ?? 0.1);
-    return new THREE.CylinderGeometry(radius, radius, body.depth, 64, 1, true);
-  }, [body.depth, body.height, body.profileType, body.radius, body.width]);
-  const capGeometry = useMemo(() => {
     if (body.profileType === "mesh" && body.meshData) {
       return meshDataToGeometry(body.meshData);
     }
@@ -1152,13 +1230,31 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
     }
     const radius = Math.max(0.1, body.radius ?? 0.1);
     return new THREE.CylinderGeometry(radius, radius, body.depth, 64);
-  }, [body.depth, body.height, body.profileType, body.radius, body.width]);
-  const edgeGeometry = useMemo(() => {
-    if (body.profileType === "mesh") {
-      return buildCadFeatureEdges(capGeometry, 55);
+  }, [body.depth, body.height, body.meshData, body.profileType, body.radius, body.width, previewMeshData]);
+  const capGeometry = useMemo(() => {
+    if (previewMeshData) {
+      return meshDataToGeometry(previewMeshData);
     }
-    return new THREE.EdgesGeometry(capGeometry, 18);
-  }, [body.profileType, capGeometry]);
+    if (body.profileType === "mesh" && body.meshData) {
+      return meshDataToGeometry(body.meshData);
+    }
+    if (body.profileType === "rectangle") {
+      return new THREE.BoxGeometry(
+        Math.max(0.1, body.width ?? 0.1),
+        Math.max(0.1, body.height ?? 0.1),
+        body.depth
+      );
+    }
+    const radius = Math.max(0.1, body.radius ?? 0.1);
+    return new THREE.CylinderGeometry(radius, radius, body.depth, 64);
+  }, [body.depth, body.height, body.meshData, body.profileType, body.radius, body.width, previewMeshData]);
+  const edgeGeometry = useMemo(() => {
+    const thresholdAngle = body.profileType === "mesh" || previewMeshData ? 82 : 18;
+    return new THREE.EdgesGeometry(capGeometry, thresholdAngle);
+  }, [body.profileType, capGeometry, previewMeshData]);
+
+  const edgeDescriptors = useMemo(() => getRectBodyEdges(body), [body]);
+  const renderAsMesh = body.profileType === "mesh" || !!previewMeshData;
 
   useEffect(
     () => () => {
@@ -1182,39 +1278,70 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
       >
         <mesh
           position={
-            body.profileType === "mesh"
+            renderAsMesh
               ? [0, 0, 0]
               : [body.center[0], body.center[1], ((body.direction ?? 1) * body.depth) / 2]
           }
-          rotation={body.profileType === "circle" ? [Math.PI / 2, 0, 0] : [0, 0, 0]}
-          userData={{ [EXPORTABLE_GEOMETRY_FLAG]: true }}
+          rotation={body.profileType === "circle" && !renderAsMesh ? [Math.PI / 2, 0, 0] : [0, 0, 0]}
+          userData={{
+            [EXPORTABLE_GEOMETRY_FLAG]: true,
+            [DESIGN_HEALTH_BODY_ID_FLAG]: body.id,
+          }}
           onClick={(event) => {
             event.stopPropagation();
             onSelectSolidBody(body.id);
           }}
           onDoubleClick={(event) => {
             event.stopPropagation();
-            onSelectSolidFace(body.id, "side");
+            const normal = event.face?.normal
+              ? event.face.normal
+                  .clone()
+                  .applyMatrix3(new THREE.Matrix3().getNormalMatrix(event.object.matrixWorld))
+                  .normalize()
+              : new THREE.Vector3(0, 0, 1);
+            onSelectSolidFace(body.id, "side", {
+              point: [event.point.x, event.point.y, event.point.z],
+              normal: [normal.x, normal.y, normal.z],
+            });
+          }}
+          onPointerMove={(event) => {
+            if (!holeModeActive) return;
+            const normal = event.face?.normal
+              ? event.face.normal
+                  .clone()
+                  .applyMatrix3(new THREE.Matrix3().getNormalMatrix(event.object.matrixWorld))
+                  .normalize()
+              : new THREE.Vector3(0, 0, 1);
+            onHoverSolidFace(body.id, "side", {
+              point: [event.point.x, event.point.y, event.point.z],
+              normal: [normal.x, normal.y, normal.z],
+            });
           }}
         >
           <primitive attach="geometry" object={sideGeometry} />
           <meshStandardMaterial
-            color={
+            color={applyHealthTint(
               selectedFaceId === "side"
-                ? "#eef4fc"
+                ? holeModeActive
+                  ? "#dbeeff"
+                  : "#eef4fc"
                 : booleanRole === "base"
                   ? "#dbeafe"
                   : booleanRole === "tool"
                     ? "#fee2e2"
                     : selected
                       ? "#dbe4f0"
-                      : "#b8c3d2"
-            }
+                      : "#b8c3d2",
+              healthStatus,
+              selected
+            )}
+            emissive={getHealthEmissive(healthStatus)}
+            emissiveIntensity={getHealthEmissiveIntensity(healthStatus, selected) + (holeModeActive && selectedFaceId === "side" ? 0.09 : 0)}
             metalness={0.12}
             roughness={0.28}
           />
         </mesh>
-        {body.profileType !== "mesh" ? (
+        {!renderAsMesh ? (
           <>
             <mesh
               position={[
@@ -1222,10 +1349,35 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
                 body.center[1],
                 (body.direction ?? 1) * body.depth + 0.01,
               ]}
-              userData={{ [EXPORTABLE_GEOMETRY_FLAG]: true }}
+              userData={{
+                [EXPORTABLE_GEOMETRY_FLAG]: false,
+                [DESIGN_HEALTH_BODY_ID_FLAG]: body.id,
+              }}
               onClick={(event) => {
                 event.stopPropagation();
-                onSelectSolidFace(body.id, "top");
+                const normal = event.face?.normal
+                  ? event.face.normal
+                      .clone()
+                      .applyMatrix3(new THREE.Matrix3().getNormalMatrix(event.object.matrixWorld))
+                      .normalize()
+                  : new THREE.Vector3(0, 0, 1);
+                onSelectSolidFace(body.id, "top", {
+                  point: [event.point.x, event.point.y, event.point.z],
+                  normal: [normal.x, normal.y, normal.z],
+                });
+              }}
+              onPointerMove={(event) => {
+                if (!holeModeActive) return;
+                const normal = event.face?.normal
+                  ? event.face.normal
+                      .clone()
+                      .applyMatrix3(new THREE.Matrix3().getNormalMatrix(event.object.matrixWorld))
+                      .normalize()
+                  : new THREE.Vector3(0, 0, 1);
+                onHoverSolidFace(body.id, "top", {
+                  point: [event.point.x, event.point.y, event.point.z],
+                  normal: [normal.x, normal.y, normal.z],
+                });
               }}
             >
               {body.profileType === "rectangle" ? (
@@ -1239,9 +1391,19 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
                 <circleGeometry args={[Math.max(0.1, (body.radius ?? 0.1) * 0.985), 64]} />
               )}
               <meshStandardMaterial
-                color={
-                  selectedFaceId === "top" ? "#f2f7ff" : selected ? "#e5ecf5" : "#cfd8e4"
-                }
+                color={applyHealthTint(
+                  selectedFaceId === "top"
+                    ? holeModeActive
+                      ? "#dbeeff"
+                      : "#f2f7ff"
+                    : selected
+                      ? "#e5ecf5"
+                      : "#cfd8e4",
+                  healthStatus,
+                  selected
+                )}
+                emissive={getHealthEmissive(healthStatus)}
+                emissiveIntensity={getHealthEmissiveIntensity(healthStatus, selected) + (holeModeActive && selectedFaceId === "top" ? 0.09 : 0)}
                 metalness={0.08}
                 roughness={0.3}
                 side={THREE.DoubleSide}
@@ -1250,10 +1412,35 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
             <mesh
               position={[body.center[0], body.center[1], 0.01]}
               rotation={[Math.PI, 0, 0]}
-              userData={{ [EXPORTABLE_GEOMETRY_FLAG]: true }}
+              userData={{
+                [EXPORTABLE_GEOMETRY_FLAG]: false,
+                [DESIGN_HEALTH_BODY_ID_FLAG]: body.id,
+              }}
               onClick={(event) => {
                 event.stopPropagation();
-                onSelectSolidFace(body.id, "bottom");
+                const normal = event.face?.normal
+                  ? event.face.normal
+                      .clone()
+                      .applyMatrix3(new THREE.Matrix3().getNormalMatrix(event.object.matrixWorld))
+                      .normalize()
+                  : new THREE.Vector3(0, 0, -1);
+                onSelectSolidFace(body.id, "bottom", {
+                  point: [event.point.x, event.point.y, event.point.z],
+                  normal: [normal.x, normal.y, normal.z],
+                });
+              }}
+              onPointerMove={(event) => {
+                if (!holeModeActive) return;
+                const normal = event.face?.normal
+                  ? event.face.normal
+                      .clone()
+                      .applyMatrix3(new THREE.Matrix3().getNormalMatrix(event.object.matrixWorld))
+                      .normalize()
+                  : new THREE.Vector3(0, 0, -1);
+                onHoverSolidFace(body.id, "bottom", {
+                  point: [event.point.x, event.point.y, event.point.z],
+                  normal: [normal.x, normal.y, normal.z],
+                });
               }}
             >
               {body.profileType === "rectangle" ? (
@@ -1267,13 +1454,19 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
                 <circleGeometry args={[Math.max(0.1, (body.radius ?? 0.1) * 0.985), 64]} />
               )}
               <meshStandardMaterial
-                color={
+                color={applyHealthTint(
                   selectedFaceId === "bottom"
-                    ? "#f2f7ff"
+                    ? holeModeActive
+                      ? "#dbeeff"
+                      : "#f2f7ff"
                     : selected
                       ? "#dce4ef"
-                      : "#c5cfdd"
-                }
+                      : "#c5cfdd",
+                  healthStatus,
+                  selected
+                )}
+                emissive={getHealthEmissive(healthStatus)}
+                emissiveIntensity={getHealthEmissiveIntensity(healthStatus, selected) + (holeModeActive && selectedFaceId === "bottom" ? 0.09 : 0)}
                 metalness={0.08}
                 roughness={0.34}
                 side={THREE.DoubleSide}
@@ -1281,13 +1474,51 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
             </mesh>
           </>
         ) : null}
+        {isFilletCapableBody(body) && (selected || filletModeActive) ? (
+          <group>
+            {edgeDescriptors.map((edge) => {
+              const edgeActive = selectedEdgeId === edge.id;
+              return (
+                <line
+                  key={edge.id}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSelectSolidEdge(body.id, edge.id);
+                  }}
+                >
+                  <bufferGeometry>
+                    <bufferAttribute
+                      attach="attributes-position"
+                      args={[
+                        new Float32Array([
+                          edge.start[0],
+                          edge.start[1],
+                          edge.start[2],
+                          edge.end[0],
+                          edge.end[1],
+                          edge.end[2],
+                        ]),
+                        3,
+                      ]}
+                    />
+                  </bufferGeometry>
+                  <lineBasicMaterial
+                    color={edgeActive ? "#8dd1ff" : "#4f6278"}
+                    transparent
+                    opacity={edgeActive ? 0.95 : 0.58}
+                  />
+                </line>
+              );
+            })}
+          </group>
+        ) : null}
         <lineSegments
           position={
-            body.profileType === "mesh"
+            renderAsMesh
               ? [0, 0, 0]
               : [body.center[0], body.center[1], ((body.direction ?? 1) * body.depth) / 2]
           }
-          rotation={body.profileType === "circle" ? [Math.PI / 2, 0, 0] : [0, 0, 0]}
+          rotation={body.profileType === "circle" && !renderAsMesh ? [Math.PI / 2, 0, 0] : [0, 0, 0]}
           geometry={edgeGeometry}
           {...nonSelectableProps}
         >
@@ -1300,15 +1531,17 @@ const SolidBodyMesh = memo(function SolidBodyMesh({
                   : selected || selectedFaceId
                     ? "#0f172a"
                     : body.profileType === "mesh"
-                      ? "#1f2937"
+                      ? "#334155"
                       : "#334155"
             }
             transparent
             opacity={
-              selected || selectedFaceId
-                ? 0.72
-                : body.profileType === "mesh"
-                  ? 0.58
+              body.profileType === "mesh"
+                ? selected || selectedFaceId
+                  ? 0.36
+                  : 0.18
+                : selected || selectedFaceId
+                  ? 0.72
                   : 0.52
             }
           />
@@ -1325,8 +1558,16 @@ const SolidBodies = memo(function SolidBodies({
   booleanToolBodyId,
   selectedSolidBodyId,
   selectedSolidFace,
+  selectedSolidEdge,
   onSelectSolidBody,
   onSelectSolidFace,
+  onHoverSolidFace,
+  onSelectSolidEdge,
+  designHealthStatusByBody,
+  filletModeActive,
+  holeModeActive,
+  filletPreviewBodyId,
+  filletPreviewMeshData,
 }: {
   solidBodies: SolidBody[];
   booleanModeActive: boolean;
@@ -1334,8 +1575,24 @@ const SolidBodies = memo(function SolidBodies({
   booleanToolBodyId: string | null;
   selectedSolidBodyId: string | null;
   selectedSolidFace: { bodyId: string; faceId: BodyFaceId } | null;
+  selectedSolidEdge: { bodyId: string; edgeId: FilletEdgeId } | null;
   onSelectSolidBody: (id: string | null) => void;
-  onSelectSolidFace: (bodyId: string, faceId: BodyFaceId) => void;
+  onSelectSolidFace: (
+    bodyId: string,
+    faceId: BodyFaceId,
+    hit?: { point: Vector3Tuple; normal: Vector3Tuple }
+  ) => void;
+  onHoverSolidFace: (
+    bodyId: string,
+    faceId: BodyFaceId,
+    hit?: { point: Vector3Tuple; normal: Vector3Tuple }
+  ) => void;
+  onSelectSolidEdge: (bodyId: string, edgeId: FilletEdgeId) => void;
+  designHealthStatusByBody: Record<string, "idle" | "ok" | "warning" | "error">;
+  filletModeActive: boolean;
+  holeModeActive: boolean;
+  filletPreviewBodyId: string | null;
+  filletPreviewMeshData: SolidBody["meshData"] | null;
 }) {
   return (
     <group>
@@ -1358,8 +1615,20 @@ const SolidBodies = memo(function SolidBodies({
             selectedFaceId={
               selectedSolidFace?.bodyId === body.id ? selectedSolidFace.faceId : null
             }
+            selectedEdgeId={
+              selectedSolidEdge?.bodyId === body.id ? selectedSolidEdge.edgeId : null
+            }
             onSelectSolidBody={onSelectSolidBody}
             onSelectSolidFace={onSelectSolidFace}
+            onHoverSolidFace={onHoverSolidFace}
+            onSelectSolidEdge={onSelectSolidEdge}
+            healthStatus={designHealthStatusByBody[body.id] ?? "idle"}
+            filletModeActive={filletModeActive}
+            holeModeActive={
+              holeModeActive &&
+              selectedSolidFace?.bodyId === body.id
+            }
+            previewMeshData={filletPreviewBodyId === body.id ? filletPreviewMeshData : null}
           />
         );
       })}
@@ -2145,8 +2414,10 @@ export const Scene3D = memo(function Scene3D({
   booleanToolBodyId,
   booleanPreviewMeshData,
   selectedSketchCircleId,
+  selectedSketchCurves,
   selectedSolidBodyId,
   selectedSolidFace,
+  selectedSolidEdge,
   sketchModeActive,
   activeSketchPlane,
   dimensions,
@@ -2155,8 +2426,11 @@ export const Scene3D = memo(function Scene3D({
   planeSelectionEnabled,
   onSelectObject,
   onSelectSketchCircle,
+  onSelectSketchCurve,
   onSelectSolidBody,
   onSelectSolidFace,
+  onHoverSolidFace,
+  onSelectSolidEdge,
   onSketchPlanePointerDown,
   onSketchPlanePointerMove,
   onSketchPlanePointerUp,
@@ -2177,6 +2451,12 @@ export const Scene3D = memo(function Scene3D({
   onHoverTransformAxis,
   onTransformAxisPointerDown,
   exportRootRef,
+  designHealthStatusByBody,
+  filletModeActive,
+  filletPreviewBodyId,
+  filletPreviewMeshData,
+  holeModeActive,
+  holePreview,
 }: {
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
   desiredPositionRef: React.RefObject<THREE.Vector3>;
@@ -2226,8 +2506,14 @@ export const Scene3D = memo(function Scene3D({
   booleanToolBodyId: string | null;
   booleanPreviewMeshData: SolidBody["meshData"] | null;
   selectedSketchCircleId: string | null;
+  selectedSketchCurves: Array<{
+    profileId: string;
+    curveKind: "circle" | "rectangle-edge";
+    edgeId?: "top" | "right" | "bottom" | "left";
+  }>;
   selectedSolidBodyId: string | null;
   selectedSolidFace: { bodyId: string; faceId: BodyFaceId } | null;
+  selectedSolidEdge: { bodyId: string; edgeId: FilletEdgeId } | null;
   sketchModeActive: boolean;
   activeSketchPlane: {
     id: string;
@@ -2242,8 +2528,33 @@ export const Scene3D = memo(function Scene3D({
   planeSelectionEnabled: boolean;
   onSelectObject: (selection: SceneSelection, additive: boolean) => void;
   onSelectSketchCircle: (id: string | null) => void;
+  onSelectSketchCurve: (
+    selection:
+      | {
+          profileId: string;
+          profileType: "circle";
+          curveKind: "circle";
+        }
+      | {
+          profileId: string;
+          profileType: "rectangle";
+          curveKind: "rectangle-edge";
+          edgeId: "top" | "right" | "bottom" | "left";
+        },
+    additive: boolean
+  ) => void;
   onSelectSolidBody: (id: string | null) => void;
-  onSelectSolidFace: (bodyId: string, faceId: BodyFaceId) => void;
+  onSelectSolidFace: (
+    bodyId: string,
+    faceId: BodyFaceId,
+    hit?: { point: Vector3Tuple; normal: Vector3Tuple }
+  ) => void;
+  onHoverSolidFace: (
+    bodyId: string,
+    faceId: BodyFaceId,
+    hit?: { point: Vector3Tuple; normal: Vector3Tuple }
+  ) => void;
+  onSelectSolidEdge: (bodyId: string, edgeId: FilletEdgeId) => void;
   onSketchPlanePointerDown: (
     localPoint: [number, number],
     planeState: {
@@ -2278,6 +2589,17 @@ export const Scene3D = memo(function Scene3D({
     event: ThreeEvent<PointerEvent>
   ) => void;
   exportRootRef: React.RefObject<THREE.Group | null>;
+  designHealthStatusByBody: Record<string, "idle" | "ok" | "warning" | "error">;
+  filletModeActive: boolean;
+  filletPreviewBodyId: string | null;
+  filletPreviewMeshData: SolidBody["meshData"] | null;
+  holeModeActive: boolean;
+  holePreview: {
+    center: Vector3Tuple;
+    normal: Vector3Tuple;
+    diameter: number;
+    depth: number;
+  } | null;
 }) {
   const moveGizmoTarget = useMemo(() => {
     if (!moveModeActive || !moveGizmoTargetBodyId) return null;
@@ -2332,18 +2654,103 @@ export const Scene3D = memo(function Scene3D({
       <SketchCircles
         circles={sketchCircles}
         selectedSketchCircleId={selectedSketchCircleId}
+        selectedCurveSelections={selectedSketchCurves}
         extrudeModeArmed={extrudeModeArmed}
         onSelectSketchCircle={onSelectSketchCircle}
+        onSelectSketchCurve={onSelectSketchCurve}
       />
       <SketchRectangles
         rectangles={sketchRectangles}
         selectedSketchCircleId={selectedSketchCircleId}
+        selectedCurveSelections={selectedSketchCurves}
         extrudeModeArmed={extrudeModeArmed}
         onSelectSketchCircle={onSelectSketchCircle}
+        onSelectSketchCurve={onSelectSketchCurve}
       />
       <SketchCirclePreview preview={sketchCirclePreview} />
       <SketchRectanglePreview preview={sketchRectanglePreview} />
       <ExtrudePreviewBody preview={extrudePreview} />
+      {holePreview ? (
+        <group {...nonSelectableProps}>
+          <mesh
+            position={[
+              holePreview.center[0] - holePreview.normal[0] * (holePreview.depth / 2),
+              holePreview.center[1] - holePreview.normal[1] * (holePreview.depth / 2),
+              holePreview.center[2] - holePreview.normal[2] * (holePreview.depth / 2),
+            ]}
+            quaternion={new THREE.Quaternion().setFromUnitVectors(
+              new THREE.Vector3(0, 1, 0),
+              new THREE.Vector3(
+                -holePreview.normal[0],
+                -holePreview.normal[1],
+                -holePreview.normal[2]
+              ).normalize()
+            )}
+            {...nonSelectableProps}
+          >
+            <cylinderGeometry
+              args={[
+                Math.max(0.1, holePreview.diameter / 2),
+                Math.max(0.1, holePreview.diameter / 2),
+                Math.max(0.1, holePreview.depth),
+                48,
+              ]}
+            />
+            <meshStandardMaterial color="#5f93b9" transparent opacity={0.32} metalness={0.1} roughness={0.42} />
+          </mesh>
+          <line {...nonSelectableProps}>
+            <bufferGeometry>
+              <bufferAttribute
+                attach="attributes-position"
+                args={[
+                  new Float32Array([
+                    holePreview.center[0],
+                    holePreview.center[1],
+                    holePreview.center[2],
+                    holePreview.center[0] - holePreview.normal[0] * holePreview.depth,
+                    holePreview.center[1] - holePreview.normal[1] * holePreview.depth,
+                    holePreview.center[2] - holePreview.normal[2] * holePreview.depth,
+                  ]),
+                  3,
+                ]}
+              />
+            </bufferGeometry>
+            <lineBasicMaterial color="#2f5c7f" transparent opacity={0.72} />
+          </line>
+          <mesh
+            position={holePreview.center}
+            {...nonSelectableProps}
+          >
+            <sphereGeometry args={[Math.max(0.2, holePreview.diameter * 0.04), 14, 14]} />
+            <meshBasicMaterial color="#2f5c7f" />
+          </mesh>
+          <mesh
+            position={[
+              holePreview.center[0] + holePreview.normal[0] * 0.04,
+              holePreview.center[1] + holePreview.normal[1] * 0.04,
+              holePreview.center[2] + holePreview.normal[2] * 0.04,
+            ]}
+            quaternion={new THREE.Quaternion().setFromUnitVectors(
+              new THREE.Vector3(0, 0, 1),
+              new THREE.Vector3(
+                holePreview.normal[0],
+                holePreview.normal[1],
+                holePreview.normal[2]
+              ).normalize()
+            )}
+            {...nonSelectableProps}
+          >
+            <ringGeometry
+              args={[
+                Math.max(0.1, holePreview.diameter / 2) * 0.94,
+                Math.max(0.1, holePreview.diameter / 2),
+                64,
+              ]}
+            />
+            <meshBasicMaterial color="#1f4766" transparent opacity={0.85} side={THREE.DoubleSide} />
+          </mesh>
+        </group>
+      ) : null}
       {booleanModeActive && booleanPreviewMeshData ? (
         <BooleanPreviewMesh meshData={booleanPreviewMeshData} />
       ) : null}
@@ -2361,8 +2768,16 @@ export const Scene3D = memo(function Scene3D({
           booleanToolBodyId={booleanToolBodyId}
           selectedSolidBodyId={selectedSolidBodyId}
           selectedSolidFace={selectedSolidFace}
+          selectedSolidEdge={selectedSolidEdge}
           onSelectSolidBody={onSelectSolidBody}
           onSelectSolidFace={onSelectSolidFace}
+          onHoverSolidFace={onHoverSolidFace}
+          onSelectSolidEdge={onSelectSolidEdge}
+          designHealthStatusByBody={designHealthStatusByBody}
+          filletModeActive={filletModeActive}
+          holeModeActive={holeModeActive}
+          filletPreviewBodyId={filletPreviewBodyId}
+          filletPreviewMeshData={filletPreviewMeshData}
         />
       </group>
       <TransformGizmo

@@ -2,6 +2,8 @@ import type {
   BooleanFeature,
   ExtrudeFeature,
   FeatureOrderItem,
+  FilletFeature,
+  HoleFeature,
   DistanceDimension,
   SketchRectangle,
   SketchFeature,
@@ -99,6 +101,14 @@ export function cloneBooleanFeature(feature: BooleanFeature): BooleanFeature {
   return { ...feature };
 }
 
+export function cloneFilletFeature(feature: FilletFeature): FilletFeature {
+  return { ...feature };
+}
+
+export function cloneHoleFeature(feature: HoleFeature): HoleFeature {
+  return { ...feature, center: [...feature.center], normal: [...feature.normal] };
+}
+
 export function cloneFeatureOrderItem(item: FeatureOrderItem): FeatureOrderItem {
   return { ...item };
 }
@@ -112,6 +122,8 @@ export function cloneSceneSnapshot(snapshot: SceneSnapshot): SceneSnapshot {
     solidBodies: snapshot.solidBodies.map(cloneSolidBody),
     extrudeFeatures: snapshot.extrudeFeatures.map(cloneExtrudeFeature),
     booleanFeatures: (snapshot.booleanFeatures ?? []).map(cloneBooleanFeature),
+    filletFeatures: (snapshot.filletFeatures ?? []).map(cloneFilletFeature),
+    holeFeatures: (snapshot.holeFeatures ?? []).map(cloneHoleFeature),
     featureOrder: snapshot.featureOrder.map(cloneFeatureOrderItem),
     dimensions: snapshot.dimensions.map(cloneDistanceDimension),
     primarySelection: cloneSelection(snapshot.primarySelection),

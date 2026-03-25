@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ThreeEvent } from "@react-three/fiber";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import {
   DEFAULT_CAMERA_POSITION,
   DEFAULT_CAMERA_TARGET,
@@ -11,6 +12,7 @@ import {
 } from "../constants";
 import {
   CameraPieMenu,
+  DesignHealthCard,
   DimensionOverlay,
   HistoryWindow,
   InspectorWindow,
@@ -41,6 +43,11 @@ import {
   isDimensionEligibleSelection,
   movePlaneInSnapshot,
 } from "../helpers/sceneMath";
+import {
+  createMoveSnapState,
+  resolveMoveSnap,
+  resolveSketchSnap,
+} from "../utils/smartSnapping";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useTransformDrag } from "../hooks/useTransformDrag";
 import type {
@@ -55,6 +62,9 @@ import type {
   CadEntitySelection,
   ExtrudeFeature,
   FeatureOrderItem,
+  FilletEdgeId,
+  FilletFeature,
+  HoleFeature,
   MousePosition,
   PieAction,
   SketchCircle,
@@ -66,6 +76,7 @@ import type {
   SceneSelection,
   SceneSnapshot,
   SolidBody,
+  SnapSettings,
   ToolPieAction,
   TransformAxis,
   TransformDragState,
@@ -81,12 +92,85 @@ import type {
   HierarchySelectionRequest,
 } from "../../shared/hierarchy/types";
 import type { PlaneSketch } from "../../shared/sketch/types";
-import { exportObjectToStl } from "../../utils/exportSTL";
-import { buildBooleanMeshData, meshDataEqual } from "../utils/booleanCSG";
+import { EXPORTABLE_GEOMETRY_FLAG, exportObjectToStl } from "../../utils/exportSTL";
+import {
+  booleanOperation as csgBooleanOperation,
+  buildBooleanMeshData,
+  cleanMeshGeometry,
+  geometryToMeshData,
+  meshDataEqual,
+  validateWatertightGeometry,
+} from "../utils/booleanCSG";
+import {
+  analyzeDesign,
+  DESIGN_HEALTH_BODY_ID_FLAG,
+  type DesignReport,
+} from "../utils/printCheck";
+import {
+  buildBodyMeshWithFillets,
+  clampFilletRadius,
+  getEdgeDescriptor,
+  isFilletCapableBody,
+} from "../utils/fillet";
 
 // ============================================
 // APP
 // ============================================
+
+type BodyDesignHealthEntry = {
+  report: DesignReport;
+  durationMs: number;
+};
+
+type FeatureTreeItem =
+  | {
+      kind: "sketch";
+      id: string;
+      name: string;
+      order: number;
+      dependencies: string[];
+      parameterSummary: string;
+      children: { id: string; name: string }[];
+    }
+  | {
+      kind: "extrude";
+      id: string;
+      name: string;
+      sourceProfileId: string;
+      order: number;
+      dependencies: string[];
+      parameterSummary: string;
+    }
+  | {
+      kind: "fillet";
+      id: string;
+      name: string;
+      bodyId: string;
+      radius: number;
+      order: number;
+      dependencies: string[];
+      parameterSummary: string;
+    }
+  | {
+      kind: "boolean";
+      id: string;
+      name: string;
+      operation: BooleanOperation;
+      order: number;
+      dependencies: string[];
+      parameterSummary: string;
+    }
+  | {
+      kind: "hole";
+      id: string;
+      name: string;
+      bodyId: string;
+      diameter: number;
+      depth: number;
+      order: number;
+      dependencies: string[];
+      parameterSummary: string;
+    };
 
 function CadWorkspace({
   isActive,
@@ -135,6 +219,8 @@ function CadWorkspace({
   const sketchFeatureIdCounterRef = useRef(1);
   const extrudeFeatureIdCounterRef = useRef(1);
   const booleanFeatureIdCounterRef = useRef(1);
+  const filletFeatureIdCounterRef = useRef(1);
+  const holeFeatureIdCounterRef = useRef(1);
   const exportRootRef = useRef<THREE.Group | null>(null);
   const selectedPlaneFocusRef = useRef<WorkPlane | null>(null);
   const selectedSketchFocusRef = useRef<SketchProfile | null>(null);
@@ -187,7 +273,7 @@ function CadWorkspace({
   const [historyCollapsed, setHistoryCollapsed] = useState(true);
   const [toolsCollapsed, setToolsCollapsed] = useState(true);
   const [toolsFlow, setToolsFlow] = useState<
-    "home" | "sketch" | "extrude" | "boolean" | "move"
+    "home" | "sketch" | "extrude" | "boolean" | "move" | "fillet" | "hole"
   >(
     "home"
   );
@@ -209,6 +295,8 @@ function CadWorkspace({
   const [solidBodies, setSolidBodies] = useState<SolidBody[]>([]);
   const [extrudeFeatures, setExtrudeFeatures] = useState<ExtrudeFeature[]>([]);
   const [booleanFeatures, setBooleanFeatures] = useState<BooleanFeature[]>([]);
+  const [filletFeatures, setFilletFeatures] = useState<FilletFeature[]>([]);
+  const [holeFeatures, setHoleFeatures] = useState<HoleFeature[]>([]);
   const [featureOrder, setFeatureOrder] = useState<FeatureOrderItem[]>([]);
   const [dimensions, setDimensions] = useState<DistanceDimension[]>([]);
   const [selectedObject, setSelectedObject] = useState<SceneSelection>(null);
@@ -245,6 +333,8 @@ function CadWorkspace({
         solidBodies: [],
         extrudeFeatures: [],
         booleanFeatures: [],
+        filletFeatures: [],
+        holeFeatures: [],
         featureOrder: [],
         dimensions: [],
         primarySelection: null,
@@ -256,14 +346,24 @@ function CadWorkspace({
   const [sketchModeActive, setSketchModeActive] = useState(false);
   const [activeSketchTool, setActiveSketchTool] = useState<SketchTool>(null);
   const [selectedSketchCircleId, setSelectedSketchCircleId] = useState<string | null>(null);
+  const [selectedSketchCurves, setSelectedSketchCurves] = useState<
+    Array<
+      Extract<CadEntitySelection, { kind: "sketch-curve" }>
+    >
+  >([]);
+  const [sketchDimensionMode, setSketchDimensionMode] = useState(false);
   const [selectedSolidBodyId, setSelectedSolidBodyId] = useState<string | null>(null);
   const [selectedSolidFace, setSelectedSolidFace] = useState<{
     bodyId: string;
     faceId: BodyFaceId;
   } | null>(null);
+  const [selectedSolidEdge, setSelectedSolidEdge] = useState<{
+    bodyId: string;
+    edgeId: FilletEdgeId;
+  } | null>(null);
   const [entitySelection, setEntitySelection] = useState<CadEntitySelection>(null);
   const [selectedFeatureNode, setSelectedFeatureNode] = useState<{
-    kind: "sketch" | "extrude" | "boolean";
+    kind: "sketch" | "extrude" | "boolean" | "fillet" | "hole";
     id: string;
   } | null>(null);
   const [circleRadiusDraft, setCircleRadiusDraft] = useState("12");
@@ -271,6 +371,21 @@ function CadWorkspace({
   const [rectangleWidthDraft, setRectangleWidthDraft] = useState("24");
   const [rectangleHeightDraft, setRectangleHeightDraft] = useState("16");
   const [extrudeDepthDraft, setExtrudeDepthDraft] = useState("20");
+  const [filletRadiusDraft, setFilletRadiusDraft] = useState("2.0");
+  const [holeDiameterDraft, setHoleDiameterDraft] = useState("6.0");
+  const [holeDepthDraft, setHoleDepthDraft] = useState("8.0");
+  const [holePlacement, setHolePlacement] = useState<{
+    bodyId: string;
+    faceId: BodyFaceId;
+    center: Vector3Tuple;
+    normal: Vector3Tuple;
+  } | null>(null);
+  const [holePlacementLocked, setHolePlacementLocked] = useState(false);
+  const [filletPreviewMeshData, setFilletPreviewMeshData] = useState<
+    SolidBody["meshData"] | null
+  >(null);
+  const [filletPreviewRadius, setFilletPreviewRadius] = useState<number | null>(null);
+  const [filletMaxRadius, setFilletMaxRadius] = useState<number | null>(null);
   const [booleanTargetBodyId, setBooleanTargetBodyId] = useState<string | null>(null);
   const [booleanToolBodyId, setBooleanToolBodyId] = useState<string | null>(null);
   const [booleanOperation, setBooleanOperation] =
@@ -299,12 +414,25 @@ function CadWorkspace({
     startMouse: MousePosition;
     startPosition: Vector3Tuple;
     startSnapshot: SceneSnapshot;
+    snapState: ReturnType<typeof createMoveSnapState> | null;
   } | null>(null);
   const [movePositionDraft, setMovePositionDraft] = useState({
     x: "0.00",
     y: "0.00",
     z: "0.00",
   });
+  const [bodyDesignHealthById, setBodyDesignHealthById] = useState<
+    Record<string, BodyDesignHealthEntry>
+  >({});
+  const snapSettings = useMemo<SnapSettings>(
+    () => ({
+      enabled: true,
+      grid: true,
+      origin: true,
+      body: true,
+    }),
+    []
+  );
   const [extrudeModeArmed, setExtrudeModeArmed] = useState(false);
   const [extrudePreview, setExtrudePreview] = useState<{
     sourceSketchId: string;
@@ -334,6 +462,8 @@ function CadWorkspace({
         solidBodies,
         extrudeFeatures,
         booleanFeatures,
+        filletFeatures,
+        holeFeatures,
         featureOrder,
         dimensions: dimensionsRef.current,
         primarySelection: primarySelectionRef.current,
@@ -342,6 +472,8 @@ function CadWorkspace({
     [
       extrudeFeatures,
       booleanFeatures,
+      filletFeatures,
+      holeFeatures,
       featureOrder,
       sketchCircles,
       sketchRectangles,
@@ -359,6 +491,8 @@ function CadWorkspace({
     setSolidBodies(nextSnapshot.solidBodies);
     setExtrudeFeatures(nextSnapshot.extrudeFeatures);
     setBooleanFeatures(nextSnapshot.booleanFeatures ?? []);
+    setFilletFeatures(nextSnapshot.filletFeatures ?? []);
+    setHoleFeatures(nextSnapshot.holeFeatures ?? []);
     setFeatureOrder(nextSnapshot.featureOrder);
     setDimensions(nextSnapshot.dimensions);
     setSelectedObject(nextSnapshot.primarySelection);
@@ -432,6 +566,18 @@ function CadWorkspace({
   const nextBooleanFeatureId = useCallback(() => {
     const nextId = `boolean-feature-${booleanFeatureIdCounterRef.current}`;
     booleanFeatureIdCounterRef.current += 1;
+    return nextId;
+  }, []);
+
+  const nextFilletFeatureId = useCallback(() => {
+    const nextId = `fillet-feature-${filletFeatureIdCounterRef.current}`;
+    filletFeatureIdCounterRef.current += 1;
+    return nextId;
+  }, []);
+
+  const nextHoleFeatureId = useCallback(() => {
+    const nextId = `hole-feature-${holeFeatureIdCounterRef.current}`;
+    holeFeatureIdCounterRef.current += 1;
     return nextId;
   }, []);
 
@@ -618,6 +764,12 @@ function CadWorkspace({
         const removedBooleanResultBodyIds = snapshot.booleanFeatures
           .filter((feature) => removedBooleanFeatureIds.includes(feature.id))
           .map((feature) => feature.resultBodyId);
+        const removedFilletFeatureIds = snapshot.filletFeatures
+          .filter((feature) => removedBodyIds.includes(feature.bodyId))
+          .map((feature) => feature.id);
+        const removedHoleFeatureIds = snapshot.holeFeatures
+          .filter((feature) => removedBodyIds.includes(feature.bodyId))
+          .map((feature) => feature.id);
         const allRemovedBodyIds = [...removedBodyIds, ...removedBooleanResultBodyIds];
 
         return {
@@ -651,6 +803,12 @@ function CadWorkspace({
           booleanFeatures: snapshot.booleanFeatures.filter(
             (feature) => !removedBooleanFeatureIds.includes(feature.id)
           ),
+          filletFeatures: snapshot.filletFeatures.filter(
+            (feature) => !removedFilletFeatureIds.includes(feature.id)
+          ),
+          holeFeatures: snapshot.holeFeatures.filter(
+            (feature) => !removedHoleFeatureIds.includes(feature.id)
+          ),
           featureOrder: snapshot.featureOrder.filter((featureRef) => {
             if (featureRef.kind === "sketch") {
               return !removedSketchFeatureIds.includes(featureRef.id);
@@ -658,7 +816,13 @@ function CadWorkspace({
             if (featureRef.kind === "extrude") {
               return !removedExtrudeFeatureIds.includes(featureRef.id);
             }
-            return !removedBooleanFeatureIds.includes(featureRef.id);
+            if (featureRef.kind === "boolean") {
+              return !removedBooleanFeatureIds.includes(featureRef.id);
+            }
+            if (featureRef.kind === "fillet") {
+              return !removedFilletFeatureIds.includes(featureRef.id);
+            }
+            return !removedHoleFeatureIds.includes(featureRef.id);
           }),
           dimensions: snapshot.dimensions.filter(
             (dimension) =>
@@ -913,6 +1077,36 @@ function CadWorkspace({
     [selectedSketchCircleId, sketchRectangles]
   );
   const selectedSketchProfile = selectedSketchCircle ?? selectedSketchRectangle;
+  const primarySketchCurve = selectedSketchCurves[0] ?? null;
+  const selectedSketchProfileForDimension = useMemo(() => {
+    if (!primarySketchCurve) return selectedSketchProfile;
+    const circle = sketchCircles.find((item) => item.id === primarySketchCurve.profileId);
+    if (circle) return circle;
+    return (
+      sketchRectangles.find((item) => item.id === primarySketchCurve.profileId) ?? null
+    );
+  }, [primarySketchCurve, selectedSketchProfile, sketchCircles, sketchRectangles]);
+  const rectangleEdgesInSelection = useMemo(
+    () =>
+      selectedSketchCurves.filter(
+        (selection) => selection.curveKind === "rectangle-edge"
+      ),
+    [selectedSketchCurves]
+  );
+  const dimensionShowWidth = useMemo(() => {
+    if (selectedSketchProfileForDimension?.profileType !== "rectangle") return false;
+    if (rectangleEdgesInSelection.length === 0) return true;
+    return rectangleEdgesInSelection.some(
+      (edge) => edge.edgeId === "left" || edge.edgeId === "right"
+    );
+  }, [rectangleEdgesInSelection, selectedSketchProfileForDimension]);
+  const dimensionShowHeight = useMemo(() => {
+    if (selectedSketchProfileForDimension?.profileType !== "rectangle") return false;
+    if (rectangleEdgesInSelection.length === 0) return true;
+    return rectangleEdgesInSelection.some(
+      (edge) => edge.edgeId === "top" || edge.edgeId === "bottom"
+    );
+  }, [rectangleEdgesInSelection, selectedSketchProfileForDimension]);
   const getBodyTransform = useCallback(
     (body: SolidBody) =>
       body.transform ?? {
@@ -969,6 +1163,39 @@ function CadWorkspace({
       })),
     [visibleSolidBodies]
   );
+  const selectedBodyDesignHealth = useMemo(
+    () => (selectedSolidBodyId ? bodyDesignHealthById[selectedSolidBodyId] ?? null : null),
+    [bodyDesignHealthById, selectedSolidBodyId]
+  );
+  const selectedBodyHealthStatus = useMemo<"idle" | "ok" | "warning" | "error">(() => {
+    if (!selectedBodyDesignHealth) return "idle";
+    if (selectedBodyDesignHealth.report.errors.length > 0) return "error";
+    if (selectedBodyDesignHealth.report.warnings.length > 0) return "warning";
+    return "ok";
+  }, [selectedBodyDesignHealth]);
+  const designHealthStatusByBody = useMemo<
+    Record<string, "idle" | "ok" | "warning" | "error">
+  >(
+    () =>
+      visibleSolidBodies.reduce<Record<string, "idle" | "ok" | "warning" | "error">>(
+        (acc, body) => {
+          const entry = bodyDesignHealthById[body.id];
+          if (!entry) {
+            acc[body.id] = "idle";
+            return acc;
+          }
+          acc[body.id] =
+            entry.report.errors.length > 0
+              ? "error"
+              : entry.report.warnings.length > 0
+                ? "warning"
+                : "ok";
+          return acc;
+        },
+        {}
+      ),
+    [bodyDesignHealthById, visibleSolidBodies]
+  );
   const booleanTargetBody = useMemo(
     () => solidBodies.find((body) => body.id === booleanTargetBodyId) ?? null,
     [booleanTargetBodyId, solidBodies]
@@ -977,7 +1204,7 @@ function CadWorkspace({
     () => solidBodies.find((body) => body.id === booleanToolBodyId) ?? null,
     [booleanToolBodyId, solidBodies]
   );
-  const featureTree = useMemo(
+  const featureTree = useMemo<FeatureTreeItem[]>(
     () =>
       featureOrder
         .map((featureRef) => {
@@ -990,6 +1217,9 @@ function CadWorkspace({
               kind: "sketch" as const,
               id: sketchFeature.id,
               name: sketchFeature.name,
+              order: sketchFeature.order,
+              dependencies: sketchFeature.dependencies,
+              parameterSummary: `${sketchFeature.profileIds.length} profile(s)`,
               children: sketchFeature.profileIds
                 .map((profileId) => {
                   const profile = sketchCircles.find((circle) => circle.id === profileId);
@@ -1017,6 +1247,44 @@ function CadWorkspace({
               id: extrudeFeature.id,
               name: extrudeFeature.name,
               sourceProfileId: extrudeFeature.sourceProfileId,
+              order: extrudeFeature.order,
+              dependencies: extrudeFeature.dependencies,
+              parameterSummary: `${extrudeFeature.depth.toFixed(2)} mm`,
+            };
+          }
+
+          if (featureRef.kind === "fillet") {
+            const filletFeature = filletFeatures.find(
+              (feature) => feature.id === featureRef.id
+            );
+            if (!filletFeature) return null;
+            return {
+              kind: "fillet" as const,
+              id: filletFeature.id,
+              name: filletFeature.name,
+              bodyId: filletFeature.bodyId,
+              radius: filletFeature.radius,
+              order: filletFeature.order,
+              dependencies: filletFeature.dependencies,
+              parameterSummary: `${filletFeature.edgeId} • ${filletFeature.radius.toFixed(2)} mm`,
+            };
+          }
+
+          if (featureRef.kind === "hole") {
+            const holeFeature = holeFeatures.find(
+              (feature) => feature.id === featureRef.id
+            );
+            if (!holeFeature) return null;
+            return {
+              kind: "hole" as const,
+              id: holeFeature.id,
+              name: holeFeature.name,
+              bodyId: holeFeature.bodyId,
+              diameter: holeFeature.diameter,
+              depth: holeFeature.depth,
+              order: holeFeature.order,
+              dependencies: holeFeature.dependencies,
+              parameterSummary: `${holeFeature.diameter.toFixed(2)} x ${holeFeature.depth.toFixed(2)} mm`,
             };
           }
 
@@ -1029,34 +1297,17 @@ function CadWorkspace({
             id: booleanFeature.id,
             name: booleanFeature.name,
             operation: booleanFeature.operation,
+            order: booleanFeature.order,
+            dependencies: booleanFeature.dependencies,
+            parameterSummary: `${booleanFeature.operation}`,
           };
         })
-        .filter(
-          (
-            item
-          ): item is
-            | {
-                kind: "sketch";
-                id: string;
-                name: string;
-                children: { id: string; name: string }[];
-              }
-            | {
-                kind: "extrude";
-                id: string;
-                name: string;
-                sourceProfileId: string;
-              }
-            | {
-                kind: "boolean";
-                id: string;
-                name: string;
-                operation: BooleanOperation;
-              } => !!item
-        ),
+        .filter((item): item is FeatureTreeItem => item !== null),
     [
       booleanFeatures,
       extrudeFeatures,
+      filletFeatures,
+      holeFeatures,
       featureOrder,
       sketchCircles,
       sketchRectangles,
@@ -1065,6 +1316,56 @@ function CadWorkspace({
   );
 
   const canExportStl = visibleSolidBodies.length > 0;
+  const holePreview = useMemo(() => {
+    if (!holePlacement || toolsFlow !== "hole") return null;
+    const diameterValue = Number(holeDiameterDraft);
+    const depthValue = Number(holeDepthDraft);
+    const diameter = Number.isFinite(diameterValue) && diameterValue > 0 ? diameterValue : 6;
+    const depth = Number.isFinite(depthValue) && depthValue > 0 ? depthValue : 8;
+    return {
+      center: holePlacement.center,
+      normal: holePlacement.normal,
+      diameter: Math.max(0.1, diameter),
+      depth: Math.max(0.1, depth),
+    };
+  }, [holeDepthDraft, holeDiameterDraft, holePlacement, toolsFlow]);
+  const selectedFeatureDetails = useMemo(() => {
+    if (!selectedFeatureNode) return null;
+    const item = featureTree.find(
+      (feature) =>
+        feature.kind === selectedFeatureNode.kind && feature.id === selectedFeatureNode.id
+    );
+    if (!item) return null;
+    return {
+      name: item.name,
+      kind: item.kind,
+      order: item.order,
+      dependencies: item.dependencies,
+      parameterSummary: item.parameterSummary,
+    };
+  }, [featureTree, selectedFeatureNode]);
+  const filletFeaturesByBody = useMemo(() => {
+    return filletFeatures.reduce<Record<string, FilletFeature[]>>((acc, feature) => {
+      if (!acc[feature.bodyId]) acc[feature.bodyId] = [];
+      acc[feature.bodyId].push(feature);
+      return acc;
+    }, {});
+  }, [filletFeatures]);
+  const selectedBodyFilletFeatures = useMemo(() => {
+    if (!selectedSolidBodyId) return [];
+    return (filletFeaturesByBody[selectedSolidBodyId] ?? []).slice().sort((a, b) => a.order - b.order);
+  }, [filletFeaturesByBody, selectedSolidBodyId]);
+  const selectedFilletFeature = useMemo(() => {
+    if (!selectedFeatureNode || selectedFeatureNode.kind !== "fillet") return null;
+    return filletFeatures.find((feature) => feature.id === selectedFeatureNode.id) ?? null;
+  }, [filletFeatures, selectedFeatureNode]);
+  const selectedEdgeBody = useMemo(
+    () =>
+      selectedSolidEdge
+        ? solidBodies.find((body) => body.id === selectedSolidEdge.bodyId) ?? null
+        : null,
+    [selectedSolidEdge, solidBodies]
+  );
   const extrudeModeActive = extrudeModeArmed || extrudePreview !== null;
   const planeSelectionEnabled =
     toolsFlow === "sketch" && sketchPlaneSelectionMode;
@@ -1086,6 +1387,68 @@ function CadWorkspace({
     if (!Number.isFinite(parsed) || parsed <= 0) return null;
     return parsed;
   }, []);
+
+  const collectBodyWorldGeometry = useCallback((bodyId: string) => {
+    if (!exportRootRef.current) return null;
+    exportRootRef.current.updateWorldMatrix(true, true);
+    const bodyParts: THREE.BufferGeometry[] = [];
+
+    exportRootRef.current.traverse((node) => {
+      if (!(node instanceof THREE.Mesh)) return;
+      if (!node.visible) return;
+      if (!node.userData?.[EXPORTABLE_GEOMETRY_FLAG]) return;
+      if (node.userData?.[DESIGN_HEALTH_BODY_ID_FLAG] !== bodyId) return;
+      if (!(node.geometry instanceof THREE.BufferGeometry)) return;
+      const transformed = node.geometry.clone();
+      transformed.applyMatrix4(node.matrixWorld);
+      bodyParts.push(transformed);
+    });
+
+    if (bodyParts.length === 0) return null;
+    const merged =
+      bodyParts.length === 1 ? bodyParts[0].clone() : mergeGeometries(bodyParts, false);
+    bodyParts.forEach((geometry) => geometry.dispose());
+    if (!merged) return null;
+    const cleaned = cleanMeshGeometry(merged);
+    merged.dispose();
+    return cleaned;
+  }, []);
+
+  const subtractHoleFromGeometry = useCallback(
+    (
+      target: THREE.BufferGeometry,
+      center: Vector3Tuple,
+      normal: Vector3Tuple,
+      diameter: number,
+      depth: number
+    ) => {
+      const direction = new THREE.Vector3(...normal).normalize().multiplyScalar(-1);
+      const radius = Math.max(0.1, diameter / 2);
+      const holeDepth = Math.max(0.1, depth);
+      const cutter = new THREE.CylinderGeometry(radius, radius, holeDepth + 0.2, 40, 1, false);
+      const quaternion = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        direction
+      );
+      cutter.applyQuaternion(quaternion);
+      cutter.translate(
+        center[0] + direction.x * (holeDepth / 2),
+        center[1] + direction.y * (holeDepth / 2),
+        center[2] + direction.z * (holeDepth / 2)
+      );
+      try {
+        const result = csgBooleanOperation(target, cutter, "subtract");
+        const cleaned = cleanMeshGeometry(result);
+        result.dispose();
+        cutter.dispose();
+        return cleaned;
+      } catch {
+        cutter.dispose();
+        return null;
+      }
+    },
+    []
+  );
 
   const buildBodyMatrix = useCallback(
     (body: SolidBody) => {
@@ -1372,6 +1735,12 @@ function CadWorkspace({
           name: `Sketch ${snapshot.sketchFeatures.length + 1}`,
           planeId: plane.id,
           profileIds: [nextCircle.id],
+          order: snapshot.featureOrder.length + 1,
+          dependencies: [plane.id],
+          parameters: {
+            planeId: plane.id,
+            profileIds: [nextCircle.id],
+          },
         };
 
         return {
@@ -1419,6 +1788,12 @@ function CadWorkspace({
           name: `Sketch ${snapshot.sketchFeatures.length + 1}`,
           planeId: plane.id,
           profileIds: [nextRectangle.id],
+          order: snapshot.featureOrder.length + 1,
+          dependencies: [plane.id],
+          parameters: {
+            planeId: plane.id,
+            profileIds: [nextRectangle.id],
+          },
         };
 
         return {
@@ -1463,6 +1838,7 @@ function CadWorkspace({
       return;
     }
 
+    setSketchDimensionMode(false);
     setSketchModeActive(true);
     setActiveSketchTool("circle");
     setCirclePreview(null);
@@ -1475,6 +1851,7 @@ function CadWorkspace({
       return;
     }
 
+    setSketchDimensionMode(false);
     setSketchModeActive(true);
     setActiveSketchTool("rectangle");
     setCirclePreview(null);
@@ -1609,6 +1986,8 @@ function CadWorkspace({
     (id: string | null) => {
       setSelectedSketchCircleId(id);
       if (id) {
+        setSelectedSketchCurves([]);
+        setSketchDimensionMode(false);
         setSelectedSolidBodyId(null);
         setSelectedSolidFace(null);
         setSelectedObject(null);
@@ -1628,12 +2007,81 @@ function CadWorkspace({
           return;
         }
       } else {
+        setSelectedSketchCurves([]);
+        setSketchDimensionMode(false);
         setEntitySelection(null);
         setSelectedFeatureNode(null);
       }
       if (!extrudeModeArmed) {
         setExtrudePreview(null);
       }
+    },
+    [
+      beginExtrudePreviewForSketch,
+      extrudeModeArmed,
+      sketchCircles,
+      sketchFeatures,
+      sketchRectangles,
+    ]
+  );
+
+  const handleSelectSketchCurve = useCallback(
+    (
+      selection: {
+        profileId: string;
+        profileType: "circle" | "rectangle";
+        curveKind: "circle" | "rectangle-edge";
+        edgeId?: "top" | "right" | "bottom" | "left";
+      },
+      additive: boolean
+    ) => {
+      const normalizedSelection: Extract<CadEntitySelection, { kind: "sketch-curve" }> = {
+        kind: "sketch-curve",
+        profileId: selection.profileId,
+        profileType: selection.profileType,
+        curveKind: selection.curveKind,
+        edgeId: selection.edgeId,
+      };
+      setSketchDimensionMode(false);
+      setSelectedObject(null);
+      setSecondarySelection(null);
+      setSelectedSolidBodyId(null);
+      setSelectedSolidFace(null);
+      setEntitySelection(normalizedSelection);
+      setSelectedSketchCircleId(selection.profileId);
+      const sketchFeature = sketchFeatures.find((feature) =>
+        feature.profileIds.includes(selection.profileId)
+      );
+      setSelectedFeatureNode(
+        sketchFeature ? { kind: "sketch", id: sketchFeature.id } : null
+      );
+      if (extrudeModeArmed) {
+        const clickedProfile =
+          sketchCircles.find((circle) => circle.id === selection.profileId) ??
+          sketchRectangles.find((rectangle) => rectangle.id === selection.profileId);
+        if (clickedProfile) {
+          beginExtrudePreviewForSketch(clickedProfile);
+        }
+      } else {
+        setExtrudePreview(null);
+      }
+
+      setSelectedSketchCurves((existing) => {
+        if (!additive) return [normalizedSelection];
+        const existingIndex = existing.findIndex(
+          (item) =>
+            item.profileId === selection.profileId &&
+            item.curveKind === selection.curveKind &&
+            item.edgeId === selection.edgeId
+        );
+        if (existingIndex >= 0) {
+          const next = [...existing];
+          next.splice(existingIndex, 1);
+          return next;
+        }
+        const appended = [...existing, normalizedSelection];
+        return appended.slice(-2);
+      });
     },
     [
       beginExtrudePreviewForSketch,
@@ -1652,6 +2100,9 @@ function CadWorkspace({
 
     setSelectedSolidBodyId(id);
     setSelectedSolidFace(null);
+    setSelectedSolidEdge(null);
+    setSelectedSketchCurves([]);
+    setSketchDimensionMode(false);
     if (id) {
       if (toolsFlow === "boolean" && booleanModeActive) {
         setSelectedSketchCircleId(null);
@@ -1684,10 +2135,37 @@ function CadWorkspace({
       if (booleanFeature) {
         setSelectedFeatureNode({ kind: "boolean", id: booleanFeature.id });
       } else {
-        const extrudeFeature = extrudeFeatures.find((feature) => feature.bodyId === id);
-        setSelectedFeatureNode(
-          extrudeFeature ? { kind: "extrude", id: extrudeFeature.id } : null
-        );
+        const holeFeature = holeFeatures
+          .filter((feature) => feature.bodyId === id)
+          .sort((a, b) => a.order - b.order)
+          .at(-1);
+        if (holeFeature) {
+          setSelectedFeatureNode({ kind: "hole", id: holeFeature.id });
+          setSelectedSolidFace({ bodyId: id, faceId: holeFeature.faceId });
+          setHolePlacement({
+            bodyId: id,
+            faceId: holeFeature.faceId,
+            center: [...holeFeature.center] as Vector3Tuple,
+            normal: [...holeFeature.normal] as Vector3Tuple,
+          });
+          setHoleDiameterDraft(holeFeature.diameter.toFixed(2));
+          setHoleDepthDraft(holeFeature.depth.toFixed(2));
+        } else {
+        const filletFeature = filletFeatures
+          .filter((feature) => feature.bodyId === id)
+          .at(-1);
+        if (filletFeature) {
+          setSelectedFeatureNode({ kind: "fillet", id: filletFeature.id });
+          setSelectedSolidEdge({ bodyId: id, edgeId: filletFeature.edgeId });
+          setEntitySelection({ kind: "edge", bodyId: id, edgeId: filletFeature.edgeId });
+          setFilletRadiusDraft(filletFeature.radius.toFixed(2));
+        } else {
+          const extrudeFeature = extrudeFeatures.find((feature) => feature.bodyId === id);
+          setSelectedFeatureNode(
+            extrudeFeature ? { kind: "extrude", id: extrudeFeature.id } : null
+          );
+        }
+        }
       }
     } else {
       setEntitySelection(null);
@@ -1701,16 +2179,23 @@ function CadWorkspace({
     booleanStep,
     booleanTargetBodyId,
     extrudeFeatures,
+    filletFeatures,
     sketchPlaneSelectionMode,
     toolsFlow,
   ]);
 
-  const handleSelectSolidFace = useCallback((bodyId: string, faceId: BodyFaceId) => {
+  const handleSelectSolidFace = useCallback((
+    bodyId: string,
+    faceId: BodyFaceId,
+    hit?: { point: Vector3Tuple; normal: Vector3Tuple }
+  ) => {
     if (toolsFlow === "sketch" && sketchPlaneSelectionMode) {
       const body = solidBodies.find((item) => item.id === bodyId);
       if (!body) return;
       setSelectedSolidBodyId(bodyId);
       setSelectedSolidFace({ bodyId, faceId });
+      setSelectedSketchCurves([]);
+      setSketchDimensionMode(false);
       setEntitySelection({ kind: "face", bodyId, faceId });
       setActiveSketchPlane(createSketchPlaneFromBodyFace(body, faceId));
       setSketchPlaneSelectionMode(false);
@@ -1720,7 +2205,10 @@ function CadWorkspace({
 
     setSelectedSolidBodyId(bodyId);
     setSelectedSolidFace({ bodyId, faceId });
+    setSelectedSolidEdge(null);
     setSelectedSketchCircleId(null);
+    setSelectedSketchCurves([]);
+    setSketchDimensionMode(false);
     setSelectedObject(null);
     setSecondarySelection(null);
     setEntitySelection({ kind: "face", bodyId, faceId });
@@ -1730,34 +2218,152 @@ function CadWorkspace({
     if (booleanFeature) {
       setSelectedFeatureNode({ kind: "boolean", id: booleanFeature.id });
     } else {
+      const holeFeature = holeFeatures
+        .filter((feature) => feature.bodyId === bodyId && feature.faceId === faceId)
+        .sort((a, b) => a.order - b.order)
+        .at(-1);
+      if (holeFeature) {
+        setSelectedFeatureNode({ kind: "hole", id: holeFeature.id });
+      } else {
+      const filletFeature = filletFeatures
+        .filter((feature) => feature.bodyId === bodyId)
+        .at(-1);
+      if (filletFeature) {
+        setSelectedFeatureNode({ kind: "fillet", id: filletFeature.id });
+      } else {
       const extrudeFeature = extrudeFeatures.find((feature) => feature.bodyId === bodyId);
       setSelectedFeatureNode(
         extrudeFeature ? { kind: "extrude", id: extrudeFeature.id } : null
       );
+      }
+      }
     }
     setExtrudePreview(null);
     setExtrudeModeArmed(false);
+    if (toolsFlow === "hole" && hit) {
+      const snappedCenter: Vector3Tuple = [
+        snapToIncrement(hit.point[0]),
+        snapToIncrement(hit.point[1]),
+        snapToIncrement(hit.point[2]),
+      ];
+      setHolePlacement({
+        bodyId,
+        faceId,
+        center: snappedCenter,
+        normal: hit.normal,
+      });
+      setHolePlacementLocked(true);
+    }
   }, [
     booleanFeatures,
     createSketchPlaneFromBodyFace,
     extrudeFeatures,
+    filletFeatures,
+    holeFeatures,
+    toolsFlow,
     sketchPlaneSelectionMode,
     solidBodies,
-    toolsFlow,
   ]);
+
+  const handleHoverSolidFace = useCallback(
+    (bodyId: string, faceId: BodyFaceId, hit?: { point: Vector3Tuple; normal: Vector3Tuple }) => {
+      if (toolsFlow !== "hole") return;
+      if (!hit) return;
+      if (!selectedSolidFace) return;
+      if (holePlacementLocked) return;
+      if (selectedSolidFace.bodyId !== bodyId || selectedSolidFace.faceId !== faceId) return;
+      const snappedCenter: Vector3Tuple = [
+        snapToIncrement(hit.point[0]),
+        snapToIncrement(hit.point[1]),
+        snapToIncrement(hit.point[2]),
+      ];
+      setHolePlacement({
+        bodyId,
+        faceId,
+        center: snappedCenter,
+        normal: hit.normal,
+      });
+    },
+    [holePlacementLocked, selectedSolidFace, toolsFlow]
+  );
+
+  const handleSelectSolidEdge = useCallback((bodyId: string, edgeId: FilletEdgeId) => {
+    setSelectedSolidBodyId(bodyId);
+    setSelectedSolidFace(null);
+    setSelectedSolidEdge({ bodyId, edgeId });
+    setSelectedSketchCircleId(null);
+    setSelectedSketchCurves([]);
+    setSketchDimensionMode(false);
+    setSelectedObject(null);
+    setSecondarySelection(null);
+    setEntitySelection({ kind: "edge", bodyId, edgeId });
+    setExtrudePreview(null);
+    setExtrudeModeArmed(false);
+
+    const matchingFeature = filletFeatures.find(
+      (feature) => feature.bodyId === bodyId && feature.edgeId === edgeId
+    );
+    if (matchingFeature) {
+      setSelectedFeatureNode({ kind: "fillet", id: matchingFeature.id });
+      setFilletRadiusDraft(matchingFeature.radius.toFixed(2));
+    }
+  }, [filletFeatures]);
 
   const handleMoveAxisPointerDown = useCallback(
     (axis: Exclude<TransformAxis, null>, event: ThreeEvent<PointerEvent>) => {
-      if (!selectedSolidBodyTransform) return;
+      if (!selectedSolidBodyTransform || !selectedSolidBodyId) return;
+      const selectedBody = solidBodies.find((body) => body.id === selectedSolidBodyId);
+      const selectedBounds = selectedBody ? getBodyWorldBounds(selectedBody) : null;
+      const selectedCenter = selectedBounds?.getCenter(new THREE.Vector3()) ?? null;
+      const bodyMetrics = solidBodies
+        .map((body) => {
+          const bounds = getBodyWorldBounds(body);
+          if (!bounds) return null;
+          const center = bounds.getCenter(new THREE.Vector3());
+          return {
+            id: body.id,
+            center: [center.x, center.y, center.z] as Vector3Tuple,
+            minZ: bounds.min.z,
+            maxZ: bounds.max.z,
+          };
+        })
+        .filter((item): item is {
+          id: string;
+          center: Vector3Tuple;
+          minZ: number;
+          maxZ: number;
+        } => item !== null);
+
       setMoveDragState({
         axis,
         startMouse: { x: event.clientX, y: event.clientY },
         startPosition: [...selectedSolidBodyTransform.position] as Vector3Tuple,
         startSnapshot: getCurrentSceneSnapshot(),
+        snapState:
+          selectedBounds && selectedBody && selectedCenter
+            ? createMoveSnapState({
+                selectedBodyId: selectedBody.id,
+                selectedStartPosition: [...selectedSolidBodyTransform.position] as Vector3Tuple,
+                selectedStartCenter: [
+                  selectedCenter.x,
+                  selectedCenter.y,
+                  selectedCenter.z,
+                ],
+                selectedStartMinZ: selectedBounds.min.z,
+                selectedStartMaxZ: selectedBounds.max.z,
+                bodies: bodyMetrics,
+              })
+            : null,
       });
       setMoveHoveredAxis(axis);
     },
-    [getCurrentSceneSnapshot, selectedSolidBodyTransform]
+    [
+      getBodyWorldBounds,
+      getCurrentSceneSnapshot,
+      selectedSolidBodyId,
+      selectedSolidBodyTransform,
+      solidBodies,
+    ]
   );
 
   const handleConfirmExtrudePreview = useCallback(() => {
@@ -1813,6 +2419,13 @@ function CadWorkspace({
         bodyId: nextBody.id,
         depth: preview.depth,
         direction: preview.direction,
+        order: snapshot.featureOrder.length + 1,
+        dependencies: [sourceProfile.id],
+        parameters: {
+          sourceProfileId: sourceProfile.id,
+          depth: preview.depth,
+          direction: preview.direction,
+        },
       };
 
       return {
@@ -1834,8 +2447,156 @@ function CadWorkspace({
 
   const handleExportStl = useCallback(() => {
     if (!exportRootRef.current) return;
-    exportObjectToStl(exportRootRef.current, "design-export.stl");
+    const success = exportObjectToStl(exportRootRef.current, "design-export.stl");
+    if (!success) {
+      setViewportWarning("STL export failed: no exportable geometry found");
+    }
   }, []);
+
+  const analyzeBodyDesignHealth = useCallback((bodyId: string): BodyDesignHealthEntry => {
+    if (!exportRootRef.current) {
+      return {
+        report: {
+          isValid: false,
+          ok: [],
+          errors: ["Invalid or empty geometry"],
+          warnings: [],
+          metrics: {
+            boundingBox: {
+              min: [0, 0, 0],
+              max: [0, 0, 0],
+              size: [0, 0, 0],
+            },
+            minDimension: 0,
+            maxDimension: 0,
+          },
+        },
+        durationMs: 0,
+      };
+    }
+
+    exportRootRef.current.updateWorldMatrix(true, true);
+    const bodyRoot = new THREE.Group();
+
+    exportRootRef.current.traverse((node) => {
+      if (!(node instanceof THREE.Mesh)) return;
+      if (!node.visible) return;
+      if (!node.userData?.[EXPORTABLE_GEOMETRY_FLAG]) return;
+      if (node.userData?.[DESIGN_HEALTH_BODY_ID_FLAG] !== bodyId) return;
+      if (!(node.geometry instanceof THREE.BufferGeometry)) return;
+
+      const transformedGeometry = node.geometry.clone();
+      transformedGeometry.applyMatrix4(node.matrixWorld);
+      const mesh = new THREE.Mesh(transformedGeometry);
+      mesh.userData[EXPORTABLE_GEOMETRY_FLAG] = true;
+      bodyRoot.add(mesh);
+    });
+
+    const start = performance.now();
+    const report = analyzeDesign(bodyRoot);
+    const body = solidBodies.find((item) => item.id === bodyId) ?? null;
+    const bodyFillets = filletFeatures
+      .filter((feature) => feature.bodyId === bodyId)
+      .sort((a, b) => a.order - b.order);
+    const warnings = [...report.warnings];
+    const ok = [...report.ok];
+
+    if (body && bodyFillets.length > 1) {
+      const radii = bodyFillets
+        .map((feature) => feature.radius)
+        .filter((value) => Number.isFinite(value) && value > 0);
+      if (radii.length > 1) {
+        const minRadius = Math.min(...radii);
+        const maxRadius = Math.max(...radii);
+        if (minRadius > 0 && maxRadius / minRadius >= 3) {
+          warnings.push("Fillet radii vary significantly — verify manufacturability");
+        } else {
+          ok.push("Fillet radii are reasonably consistent");
+        }
+      }
+    }
+
+    if (body) {
+      for (const feature of bodyFillets) {
+        if (feature.status === "invalid") {
+          warnings.push(`${feature.name} is invalid for current body topology`);
+          continue;
+        }
+        const descriptor = getEdgeDescriptor(body, feature.edgeId);
+        if (!descriptor) continue;
+        if (feature.radius > descriptor.maxRadius * 0.92) {
+          warnings.push(`Fillet ${feature.name} is near edge limit`);
+        }
+      }
+    }
+
+    const bodyHoles = holeFeatures
+      .filter((feature) => feature.bodyId === bodyId && feature.status !== "invalid");
+    if (bodyHoles.length > 0) {
+      const bbox = report.metrics.boundingBox;
+      for (const hole of bodyHoles) {
+        if (hole.depth < hole.diameter * 0.25) {
+          warnings.push(`${hole.name} is shallow relative to diameter`);
+        }
+        if (hole.depth > report.metrics.maxDimension * 1.5) {
+          warnings.push(`${hole.name} is very deep for this body`);
+        }
+        const edgeDistance = Math.min(
+          Math.abs(hole.center[0] - bbox.min[0]),
+          Math.abs(hole.center[0] - bbox.max[0]),
+          Math.abs(hole.center[1] - bbox.min[1]),
+          Math.abs(hole.center[1] - bbox.max[1]),
+          Math.abs(hole.center[2] - bbox.min[2]),
+          Math.abs(hole.center[2] - bbox.max[2])
+        );
+        if (edgeDistance < hole.diameter * 0.6) {
+          warnings.push(`${hole.name} is close to an outer edge`);
+        }
+      }
+      for (let i = 0; i < bodyHoles.length; i += 1) {
+        for (let j = i + 1; j < bodyHoles.length; j += 1) {
+          const a = bodyHoles[i];
+          const b = bodyHoles[j];
+          const distance = new THREE.Vector3(...a.center).distanceTo(
+            new THREE.Vector3(...b.center)
+          );
+          if (distance < (a.diameter + b.diameter) * 0.45) {
+            warnings.push(`${a.name} overlaps ${b.name}`);
+          }
+        }
+      }
+    }
+
+    const nextReport: DesignReport = {
+      ...report,
+      warnings,
+      ok,
+      isValid: report.errors.length === 0,
+    };
+    const durationMs = performance.now() - start;
+
+    bodyRoot.traverse((node) => {
+      if (!(node instanceof THREE.Mesh)) return;
+      if (node.geometry instanceof THREE.BufferGeometry) node.geometry.dispose();
+    });
+
+    return { report: nextReport, durationMs };
+  }, [filletFeatures, holeFeatures, solidBodies]);
+
+  useEffect(() => {
+    setBodyDesignHealthById({});
+  }, [solidBodies]);
+
+  useEffect(() => {
+    if (!selectedSolidBodyId) return;
+    if (bodyDesignHealthById[selectedSolidBodyId]) return;
+
+    const entry = analyzeBodyDesignHealth(selectedSolidBodyId);
+    setBodyDesignHealthById((previous) => ({
+      ...previous,
+      [selectedSolidBodyId]: entry,
+    }));
+  }, [analyzeBodyDesignHealth, bodyDesignHealthById, selectedSolidBodyId]);
 
   // --------------------------------------------
   // History Navigation
@@ -1877,16 +2638,20 @@ function CadWorkspace({
   }, [getBodyTransform, selectedPlane, selectedSolidBody]);
 
   const selectedEntityType = useMemo<
-    "none" | "body" | "plane" | "profile" | "face"
+    "none" | "body" | "plane" | "profile" | "face" | "edge"
   >(() => {
+    if (selectedSolidEdge) return "edge";
     if (selectedSolidFace) return "face";
     if (selectedSolidBody) return "body";
     if (selectedSketchProfile) return "profile";
     if (selectedPlane) return "plane";
     return "none";
-  }, [selectedPlane, selectedSketchProfile, selectedSolidBody, selectedSolidFace]);
+  }, [selectedPlane, selectedSketchProfile, selectedSolidBody, selectedSolidEdge, selectedSolidFace]);
 
   const selectedEntityLabel = useMemo(() => {
+    if (selectedSolidEdge && selectedSolidBody) {
+      return `${selectedSolidEdge.edgeId} on ${selectedSolidBody.name}`;
+    }
     if (selectedSolidFace && selectedSolidBody) {
       return `${selectedSolidFace.faceId} face on ${selectedSolidBody.name}`;
     }
@@ -1894,7 +2659,7 @@ function CadWorkspace({
     if (selectedSketchProfile) return selectedSketchProfile.name;
     if (selectedPlane) return selectedPlane.name;
     return "No Selection";
-  }, [selectedPlane, selectedSketchProfile, selectedSolidBody, selectedSolidFace]);
+  }, [selectedPlane, selectedSketchProfile, selectedSolidBody, selectedSolidEdge, selectedSolidFace]);
 
   const selectedObjectName = useMemo(
     () => (selectedEntityType === "plane" ? selectedPlane?.name ?? null : null),
@@ -2016,6 +2781,42 @@ function CadWorkspace({
   }, [selectedSketchCircleId, sketchCircles, sketchRectangles]);
 
   useEffect(() => {
+    setSelectedSketchCurves((existing) =>
+      existing.filter((selection) => {
+        if (selection.profileType === "circle") {
+          return sketchCircles.some((item) => item.id === selection.profileId);
+        }
+        return sketchRectangles.some((item) => item.id === selection.profileId);
+      })
+    );
+  }, [sketchCircles, sketchRectangles]);
+
+  useEffect(() => {
+    if (!sketchDimensionMode) return;
+    if (toolsFlow !== "sketch") {
+      setSketchDimensionMode(false);
+      return;
+    }
+    if (selectedSketchCurves.length > 0 || selectedSketchProfile) return;
+    setSketchDimensionMode(false);
+  }, [
+    selectedSketchCurves.length,
+    selectedSketchProfile,
+    sketchDimensionMode,
+    toolsFlow,
+  ]);
+
+  useEffect(() => {
+    if (!sketchDimensionMode) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setSketchDimensionMode(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [sketchDimensionMode]);
+
+  useEffect(() => {
     setSolidBodies((existingBodies) => {
       let changed = false;
       const nextBodies: SolidBody[] = [];
@@ -2100,6 +2901,90 @@ function CadWorkspace({
   }, [sketchCircles, sketchRectangles]);
 
   useEffect(() => {
+    setSketchFeatures((existingFeatures) => {
+      let changed = false;
+      const nextFeatures = existingFeatures.map((feature, index) => {
+        const order = Number.isFinite(feature.order) ? feature.order : index + 1;
+        const dependencies = feature.dependencies ?? [feature.planeId];
+        const parameters = feature.parameters ?? {
+          planeId: feature.planeId,
+          profileIds: [...feature.profileIds],
+        };
+        if (
+          order === feature.order &&
+          feature.dependencies &&
+          feature.parameters
+        ) {
+          return feature;
+        }
+        changed = true;
+        return {
+          ...feature,
+          order,
+          dependencies,
+          parameters,
+        };
+      });
+      return changed ? nextFeatures : existingFeatures;
+    });
+  }, []);
+
+  useEffect(() => {
+    setExtrudeFeatures((existingFeatures) => {
+      let changed = false;
+      const nextFeatures = existingFeatures.map((feature, index) => {
+        const order = Number.isFinite(feature.order) ? feature.order : index + 1;
+        const dependencies = feature.dependencies ?? [feature.sourceProfileId];
+        const parameters = feature.parameters ?? {
+          sourceProfileId: feature.sourceProfileId,
+          depth: feature.depth,
+          direction: feature.direction,
+        };
+        if (order === feature.order && feature.dependencies && feature.parameters) {
+          return feature;
+        }
+        changed = true;
+        return {
+          ...feature,
+          order,
+          dependencies,
+          parameters,
+        };
+      });
+      return changed ? nextFeatures : existingFeatures;
+    });
+  }, []);
+
+  useEffect(() => {
+    setBooleanFeatures((existingFeatures) => {
+      let changed = false;
+      const nextFeatures = existingFeatures.map((feature, index) => {
+        const order = Number.isFinite(feature.order) ? feature.order : index + 1;
+        const dependencies = feature.dependencies ?? [
+          feature.targetBodyId,
+          feature.toolBodyId,
+        ];
+        const parameters = feature.parameters ?? {
+          targetBodyId: feature.targetBodyId,
+          toolBodyId: feature.toolBodyId,
+          operation: feature.operation,
+        };
+        if (order === feature.order && feature.dependencies && feature.parameters) {
+          return feature;
+        }
+        changed = true;
+        return {
+          ...feature,
+          order,
+          dependencies,
+          parameters,
+        };
+      });
+      return changed ? nextFeatures : existingFeatures;
+    });
+  }, []);
+
+  useEffect(() => {
     setExtrudeFeatures((existingFeatures) => {
       let changed = false;
       const nextFeatures = existingFeatures
@@ -2121,6 +3006,12 @@ function CadWorkspace({
               ...feature,
               depth: body.depth,
               direction: body.direction,
+              parameters: {
+                ...feature.parameters,
+                sourceProfileId: feature.sourceProfileId,
+                depth: body.depth,
+                direction: body.direction,
+              },
             };
           }
           return feature;
@@ -2138,11 +3029,15 @@ function CadWorkspace({
           ? sketchFeatures.some((feature) => feature.id === entry.id)
           : entry.kind === "extrude"
             ? extrudeFeatures.some((feature) => feature.id === entry.id)
-            : booleanFeatures.some((feature) => feature.id === entry.id)
+            : entry.kind === "boolean"
+              ? booleanFeatures.some((feature) => feature.id === entry.id)
+              : entry.kind === "fillet"
+                ? filletFeatures.some((feature) => feature.id === entry.id)
+                : holeFeatures.some((feature) => feature.id === entry.id)
       );
       return nextOrder.length === existingOrder.length ? existingOrder : nextOrder;
     });
-  }, [booleanFeatures, extrudeFeatures, sketchFeatures]);
+  }, [booleanFeatures, extrudeFeatures, filletFeatures, holeFeatures, sketchFeatures]);
 
   useEffect(() => {
     setBooleanFeatures((existingFeatures) => {
@@ -2157,6 +3052,93 @@ function CadWorkspace({
         : nextFeatures;
     });
   }, [solidBodies]);
+
+  useEffect(() => {
+    setFilletFeatures((existingFeatures) => {
+      const nextFeatures = existingFeatures.filter((feature) =>
+        solidBodies.some((body) => body.id === feature.bodyId)
+      );
+      return nextFeatures.length === existingFeatures.length
+        ? existingFeatures
+        : nextFeatures;
+    });
+  }, [solidBodies]);
+
+  useEffect(() => {
+    setHoleFeatures((existingFeatures) => {
+      const nextFeatures = existingFeatures.filter((feature) =>
+        solidBodies.some((body) => body.id === feature.bodyId)
+      );
+      return nextFeatures.length === existingFeatures.length
+        ? existingFeatures
+        : nextFeatures;
+    });
+  }, [solidBodies]);
+
+  useEffect(() => {
+    setHoleFeatures((existingFeatures) => {
+      let changed = false;
+      const nextFeatures = existingFeatures.map((feature, index) => {
+        const status = feature.status ?? "ok";
+        const order = Number.isFinite(feature.order) ? feature.order : index + 1;
+        const dependencies = feature.dependencies ?? [feature.bodyId, feature.faceId];
+        const parameters = feature.parameters ?? {
+          faceId: feature.faceId,
+          diameter: feature.diameter,
+          depth: feature.depth,
+        };
+        if (
+          status === feature.status &&
+          order === feature.order &&
+          feature.dependencies &&
+          feature.parameters
+        ) {
+          return feature;
+        }
+        changed = true;
+        return {
+          ...feature,
+          status,
+          order,
+          dependencies,
+          parameters,
+        };
+      });
+      return changed ? nextFeatures : existingFeatures;
+    });
+  }, []);
+
+  useEffect(() => {
+    setFilletFeatures((existingFeatures) => {
+      let changed = false;
+      const nextFeatures = existingFeatures.map((feature, index) => {
+        const status = feature.status ?? "ok";
+        const order = Number.isFinite(feature.order) ? feature.order : index + 1;
+        const dependencies = feature.dependencies ?? [feature.bodyId, feature.edgeId];
+        const parameters = feature.parameters ?? {
+          edgeId: feature.edgeId,
+          radius: feature.radius,
+        };
+        if (
+          status === feature.status &&
+          order === feature.order &&
+          feature.dependencies &&
+          feature.parameters
+        ) {
+          return feature;
+        }
+        changed = true;
+        return {
+          ...feature,
+          status,
+          order,
+          dependencies,
+          parameters,
+        };
+      });
+      return changed ? nextFeatures : existingFeatures;
+    });
+  }, []);
 
   useEffect(() => {
     setSolidBodies((existingBodies) => {
@@ -2213,6 +3195,120 @@ function CadWorkspace({
   }, [booleanFeatures, featureOrder, solidBodies]);
 
   useEffect(() => {
+    const nextFilletById = new Map<string, FilletFeature>();
+    let filletChanged = false;
+
+    for (const feature of filletFeatures) {
+      const body = solidBodies.find((item) => item.id === feature.bodyId);
+      if (!body || !isFilletCapableBody(body)) {
+        if (feature.status !== "invalid") {
+          filletChanged = true;
+          nextFilletById.set(feature.id, {
+            ...feature,
+            status: "invalid",
+            dependencies: [feature.bodyId, feature.edgeId],
+            parameters: {
+              edgeId: feature.edgeId,
+              radius: feature.radius,
+            },
+          });
+        } else {
+          nextFilletById.set(feature.id, feature);
+        }
+        continue;
+      }
+      const descriptor = getEdgeDescriptor(body, feature.edgeId);
+      if (!descriptor) {
+        if (feature.status !== "invalid") {
+          filletChanged = true;
+          nextFilletById.set(feature.id, {
+            ...feature,
+            status: "invalid",
+            dependencies: [feature.bodyId, feature.edgeId],
+            parameters: {
+              edgeId: feature.edgeId,
+              radius: feature.radius,
+            },
+          });
+        } else {
+          nextFilletById.set(feature.id, feature);
+        }
+        continue;
+      }
+      const clamped = clampFilletRadius(body, feature.edgeId, feature.radius);
+      if (
+        feature.status !== "ok" ||
+        Math.abs(clamped - feature.radius) > 1e-6
+      ) {
+        filletChanged = true;
+        nextFilletById.set(feature.id, {
+          ...feature,
+          radius: clamped,
+          status: "ok",
+          dependencies: [feature.bodyId, feature.edgeId],
+          parameters: {
+            edgeId: feature.edgeId,
+            radius: clamped,
+          },
+        });
+      } else {
+        nextFilletById.set(feature.id, feature);
+      }
+    }
+
+    if (filletChanged) {
+      setFilletFeatures((existing) =>
+        existing.map((feature) => nextFilletById.get(feature.id) ?? feature)
+      );
+      return;
+    }
+
+    const bodyMeshById = new Map<string, SolidBody["meshData"]>();
+    for (const body of solidBodies) {
+      const bodyFillets = filletFeatures
+        .filter((feature) => feature.bodyId === body.id && feature.status !== "invalid")
+        .sort((a, b) => a.order - b.order);
+      if (bodyFillets.length === 0 || !isFilletCapableBody(body)) continue;
+
+      const rebuilt = buildBodyMeshWithFillets(
+        body,
+        bodyFillets.map((feature) => ({
+          edgeId: feature.edgeId,
+          radius: feature.radius,
+        }))
+      );
+      if (!rebuilt) continue;
+      bodyMeshById.set(body.id, rebuilt.meshData);
+    }
+
+    if (bodyMeshById.size === 0) return;
+    setSolidBodies((existingBodies) => {
+      let changed = false;
+      const nextBodies = existingBodies.map((body) => {
+        const nextMesh = bodyMeshById.get(body.id);
+        if (!nextMesh) return body;
+        if (meshDataEqual(body.meshData, nextMesh) && body.profileType === "mesh") {
+          return body;
+        }
+        changed = true;
+        return {
+          ...body,
+          profileType: "mesh" as const,
+          meshData: nextMesh,
+        };
+      });
+      return changed ? nextBodies : existingBodies;
+    });
+  }, [
+    buildBodyMeshWithFillets,
+    clampFilletRadius,
+    filletFeatures,
+    getEdgeDescriptor,
+    isFilletCapableBody,
+    solidBodies,
+  ]);
+
+  useEffect(() => {
     if (extrudePreview) {
       setExtrudeDepthDraft(extrudePreview.depth.toFixed(2));
       return;
@@ -2223,11 +3319,97 @@ function CadWorkspace({
   }, [extrudePreview, selectedSolidBody]);
 
   useEffect(() => {
+    if (toolsFlow !== "fillet") {
+      setFilletPreviewMeshData(null);
+      setFilletPreviewRadius(null);
+      setFilletMaxRadius(null);
+      return;
+    }
+    if (!selectedSolidEdge || !selectedEdgeBody || !isFilletCapableBody(selectedEdgeBody)) {
+      setFilletPreviewMeshData(null);
+      setFilletPreviewRadius(null);
+      setFilletMaxRadius(null);
+      return;
+    }
+    const descriptor = getEdgeDescriptor(selectedEdgeBody, selectedSolidEdge.edgeId);
+    if (!descriptor) {
+      setFilletPreviewMeshData(null);
+      setFilletPreviewRadius(null);
+      setFilletMaxRadius(null);
+      return;
+    }
+    const parsedRadius = parsePositiveNumber(filletRadiusDraft) ?? 2;
+    const clampedRadius = clampFilletRadius(
+      selectedEdgeBody,
+      selectedSolidEdge.edgeId,
+      parsedRadius
+    );
+    const existingForBody = (filletFeaturesByBody[selectedEdgeBody.id] ?? [])
+      .filter((feature) => feature.status !== "invalid")
+      .slice();
+    const nextFilletOps = existingForBody.map((feature) => ({
+      edgeId: feature.edgeId,
+      radius: feature.edgeId === selectedSolidEdge.edgeId ? clampedRadius : feature.radius,
+    }));
+    if (!nextFilletOps.some((feature) => feature.edgeId === selectedSolidEdge.edgeId)) {
+      nextFilletOps.push({
+        edgeId: selectedSolidEdge.edgeId,
+        radius: clampedRadius,
+      });
+    }
+    const result = buildBodyMeshWithFillets(selectedEdgeBody, nextFilletOps);
+    setFilletMaxRadius(descriptor.maxRadius);
+    if (!result) {
+      setFilletPreviewMeshData(null);
+      setFilletPreviewRadius(null);
+      return;
+    }
+    setFilletPreviewMeshData(result.meshData);
+    setFilletPreviewRadius(clampedRadius);
+  }, [
+    filletFeaturesByBody,
+    filletRadiusDraft,
+    parsePositiveNumber,
+    selectedEdgeBody,
+    selectedSolidEdge,
+    isFilletCapableBody,
+    toolsFlow,
+  ]);
+
+  useEffect(() => {
     if (!selectedSolidBodyId) return;
     if (solidBodies.some((body) => body.id === selectedSolidBodyId)) return;
     setSelectedSolidBodyId(null);
     setSelectedSolidFace(null);
+    setSelectedSolidEdge(null);
   }, [selectedSolidBodyId, solidBodies]);
+
+  useEffect(() => {
+    if (!selectedSolidBodyId) {
+      setSelectedSolidEdge(null);
+      return;
+    }
+    if (!selectedSolidEdge) return;
+    if (selectedSolidEdge.bodyId !== selectedSolidBodyId) {
+      setSelectedSolidEdge(null);
+    }
+  }, [selectedSolidBodyId, selectedSolidEdge]);
+
+  useEffect(() => {
+    if (!selectedSolidFace) {
+      setHolePlacement(null);
+      setHolePlacementLocked(false);
+      return;
+    }
+    if (!holePlacement) return;
+    if (
+      holePlacement.bodyId !== selectedSolidFace.bodyId ||
+      holePlacement.faceId !== selectedSolidFace.faceId
+    ) {
+      setHolePlacement(null);
+      setHolePlacementLocked(false);
+    }
+  }, [holePlacement, selectedSolidFace]);
 
   useEffect(() => {
     if (!activeSketchPlane) return;
@@ -2344,23 +3526,28 @@ function CadWorkspace({
     const handleMouseMove = (event: MouseEvent) => {
       const deltaX = event.clientX - moveDragState.startMouse.x;
       const deltaY = event.clientY - moveDragState.startMouse.y;
-      const nextPosition = [...moveDragState.startPosition] as Vector3Tuple;
+      const rawPosition = [...moveDragState.startPosition] as Vector3Tuple;
 
       if (moveDragState.axis === "x") {
-        nextPosition[0] = snapToIncrement(
-          moveDragState.startPosition[0] + deltaX * PIXEL_TO_MM
-        );
+        rawPosition[0] = moveDragState.startPosition[0] + deltaX * PIXEL_TO_MM;
       } else if (moveDragState.axis === "y") {
-        nextPosition[1] = snapToIncrement(
-          moveDragState.startPosition[1] - deltaY * PIXEL_TO_MM
-        );
+        rawPosition[1] = moveDragState.startPosition[1] - deltaY * PIXEL_TO_MM;
       } else {
-        nextPosition[2] = snapToIncrement(
-          moveDragState.startPosition[2] - deltaY * PIXEL_TO_MM
-        );
+        rawPosition[2] = moveDragState.startPosition[2] - deltaY * PIXEL_TO_MM;
       }
 
-      updateBodyTransformPosition(selectedSolidBodyId, nextPosition);
+      if (moveDragState.snapState) {
+        const snapped = resolveMoveSnap({
+          axis: moveDragState.axis,
+          rawPosition,
+          settings: snapSettings,
+          state: moveDragState.snapState,
+        });
+        updateBodyTransformPosition(selectedSolidBodyId, snapped.position);
+        return;
+      }
+
+      updateBodyTransformPosition(selectedSolidBodyId, rawPosition);
     };
 
     const handleMouseUp = () => {
@@ -2392,6 +3579,7 @@ function CadWorkspace({
     getCurrentSceneSnapshot,
     historyIndex,
     moveDragState,
+    snapSettings,
     selectedSolidBodyId,
     updateBodyTransformPosition,
   ]);
@@ -2481,6 +3669,16 @@ function CadWorkspace({
     );
   }, [editingTransformField, isRenamingObject]);
 
+  const handleDimensionShortcut = useCallback(() => {
+    if (toolsFlow !== "sketch") return false;
+    if (selectedSketchCurves.length === 0 && !selectedSketchProfile) {
+      setViewportWarning("Select a sketch curve");
+      return true;
+    }
+    setSketchDimensionMode(true);
+    return true;
+  }, [selectedSketchCurves.length, selectedSketchProfile, toolsFlow]);
+
   const keyboardArgs = useMemo(
     () => ({
       enabled: isActive,
@@ -2523,6 +3721,7 @@ function CadWorkspace({
       createDistanceDimension,
       inspectorInputActive,
       dimensionsRef,
+      onDimensionShortcut: handleDimensionShortcut,
     }),
     [
       isActive,
@@ -2545,6 +3744,7 @@ function CadWorkspace({
       cutSelectedObject,
       deleteSelectedObject,
       createDistanceDimension,
+      handleDimensionShortcut,
       inspectorInputActive,
     ]
   );
@@ -2562,6 +3762,8 @@ function CadWorkspace({
           setSelectedObject(null);
           setSecondarySelection(null);
           setSelectedSketchCircleId(null);
+          setSelectedSketchCurves([]);
+          setSketchDimensionMode(false);
           setSelectedSolidBodyId(null);
           setSelectedSolidFace(null);
           setExtrudePreview(null);
@@ -2603,6 +3805,8 @@ function CadWorkspace({
       const isSameAsPrimary = areSelectionsEqual(selection, selectedObject);
       setSelectedObject(selection);
       setSelectedSketchCircleId(null);
+      setSelectedSketchCurves([]);
+      setSketchDimensionMode(false);
       setSelectedSolidBodyId(null);
       setSelectedSolidFace(null);
       setExtrudePreview(null);
@@ -2650,9 +3854,14 @@ function CadWorkspace({
         return;
       }
       if (planeState.id !== activeSketchPlane.id) return;
+      const snappedPoint = resolveSketchSnap({
+        localPoint,
+        settings: snapSettings,
+      });
+      const nextPoint = snappedPoint.point;
 
       if (activeSketchTool === "circle") {
-        const initialRadius = Math.max(0.1, Math.hypot(localPoint[0], localPoint[1]));
+        const initialRadius = Math.max(0.1, Math.hypot(nextPoint[0], nextPoint[1]));
 
         setCirclePreview({
           planeId: planeState.id,
@@ -2667,8 +3876,8 @@ function CadWorkspace({
         return;
       }
 
-      const width = Math.max(0.1, Math.abs(localPoint[0]));
-      const height = Math.max(0.1, Math.abs(localPoint[1]));
+      const width = Math.max(0.1, Math.abs(nextPoint[0]));
+      const height = Math.max(0.1, Math.abs(nextPoint[1]));
       setRectanglePreview({
         planeId: planeState.id,
         planePosition: [...planeState.position] as Vector3Tuple,
@@ -2681,17 +3890,28 @@ function CadWorkspace({
       });
       setCirclePreview(null);
     },
-    [activeSketchPlane, activeSketchTool, sketchModeActive]
+    [
+      activeSketchPlane,
+      activeSketchTool,
+      sketchModeActive,
+      snapSettings,
+    ]
   );
 
   const handleSketchPlanePointerMove = useCallback((localPoint: [number, number]) => {
+    const snappedPoint = resolveSketchSnap({
+      localPoint,
+      settings: snapSettings,
+    });
+    const nextPoint = snappedPoint.point;
+
     if (activeSketchTool === "circle") {
-      const radius = Math.max(0.1, Math.hypot(localPoint[0], localPoint[1]));
+      const radius = Math.max(0.1, Math.hypot(nextPoint[0], nextPoint[1]));
       pendingSketchRadiusRef.current = radius;
     } else if (activeSketchTool === "rectangle") {
       pendingSketchRectangleRef.current = {
-        width: Math.max(0.1, Math.abs(localPoint[0]) * 2),
-        height: Math.max(0.1, Math.abs(localPoint[1]) * 2),
+        width: Math.max(0.1, Math.abs(nextPoint[0]) * 2),
+        height: Math.max(0.1, Math.abs(nextPoint[1]) * 2),
       };
     } else {
       return;
@@ -2729,7 +3949,10 @@ function CadWorkspace({
         });
       }
     });
-  }, [activeSketchTool]);
+  }, [
+    activeSketchTool,
+    snapSettings,
+  ]);
 
   const handleSketchPlanePointerUp = useCallback(() => {
     if (sketchPreviewRafRef.current !== null) {
@@ -2792,6 +4015,7 @@ function CadWorkspace({
 
   const handleOpenExtrudeFlow = useCallback(() => {
     setToolsFlow("extrude");
+    setSketchDimensionMode(false);
     setSketchModeActive(false);
     setActiveSketchTool(null);
     setCirclePreview(null);
@@ -2800,6 +4024,7 @@ function CadWorkspace({
 
   const handleOpenBooleanFlow = useCallback(() => {
     setToolsFlow("boolean");
+    setSketchDimensionMode(false);
     setSketchModeActive(false);
     setActiveSketchTool(null);
     setCirclePreview(null);
@@ -2810,6 +4035,7 @@ function CadWorkspace({
 
   const handleOpenMoveFlow = useCallback(() => {
     setToolsFlow("move");
+    setSketchDimensionMode(false);
     setSketchModeActive(false);
     setActiveSketchTool(null);
     setCirclePreview(null);
@@ -2820,6 +4046,42 @@ function CadWorkspace({
     setBooleanStep("idle");
     setBooleanPreviewMeshData(null);
   }, []);
+
+  const handleOpenFilletFlow = useCallback(() => {
+    setToolsFlow("fillet");
+    setSketchDimensionMode(false);
+    setSketchModeActive(false);
+    setActiveSketchTool(null);
+    setCirclePreview(null);
+    setRectanglePreview(null);
+    setExtrudePreview(null);
+    setExtrudeModeArmed(false);
+    setBooleanModeActive(false);
+    setBooleanStep("idle");
+    setBooleanPreviewMeshData(null);
+    if (!selectedSolidEdge) {
+      setViewportWarning("Fillet: select a body edge");
+    }
+  }, [selectedSolidEdge]);
+
+  const handleOpenHoleFlow = useCallback(() => {
+    setToolsFlow("hole");
+    setSketchDimensionMode(false);
+    setSketchModeActive(false);
+    setActiveSketchTool(null);
+    setCirclePreview(null);
+    setRectanglePreview(null);
+    setExtrudePreview(null);
+    setExtrudeModeArmed(false);
+    setBooleanModeActive(false);
+    setBooleanStep("idle");
+    setBooleanPreviewMeshData(null);
+    setHolePlacement(null);
+    setHolePlacementLocked(false);
+    if (!selectedSolidFace) {
+      setViewportWarning("Hole: select a body face");
+    }
+  }, [selectedSolidFace]);
 
   const handleStartBooleanOperation = useCallback((operation: BooleanOperation) => {
     setToolsFlow("boolean");
@@ -2841,6 +4103,7 @@ function CadWorkspace({
   }, []);
 
   const handleDoneSketchFlow = useCallback(() => {
+    setSketchDimensionMode(false);
     setSketchModeActive(false);
     setSketchPlaneSelectionMode(false);
     setActiveSketchTool(null);
@@ -2851,11 +4114,163 @@ function CadWorkspace({
 
   const handleBackToToolsFlow = useCallback(() => {
     setToolsFlow("home");
+    setSketchDimensionMode(false);
     setSketchPlaneSelectionMode(false);
     setBooleanModeActive(false);
     setBooleanStep("idle");
     setBooleanPreviewMeshData(null);
+    setFilletPreviewMeshData(null);
+    setFilletPreviewRadius(null);
+    setFilletMaxRadius(null);
+    setHolePlacement(null);
+    setHolePlacementLocked(false);
   }, []);
+
+  const handleApplyFillet = useCallback(() => {
+    if (!selectedSolidEdge) {
+      setViewportWarning("Fillet: select an edge first");
+      return;
+    }
+    const body = solidBodies.find((item) => item.id === selectedSolidEdge.bodyId);
+    if (!body || !isFilletCapableBody(body)) {
+      setViewportWarning("Fillet is only available on fillet-capable bodies");
+      return;
+    }
+
+    const draftRadius = parsePositiveNumber(filletRadiusDraft);
+    if (!draftRadius) {
+      setViewportWarning("Enter a valid fillet radius");
+      return;
+    }
+
+    const clampedRadius = clampFilletRadius(body, selectedSolidEdge.edgeId, draftRadius);
+    const bodyFeatures = (filletFeaturesByBody[body.id] ?? [])
+      .filter((feature) => feature.status !== "invalid")
+      .slice()
+      .sort((a, b) => a.order - b.order);
+    const previewOps = bodyFeatures.map((feature) => ({
+      edgeId: feature.edgeId,
+      radius: feature.edgeId === selectedSolidEdge.edgeId ? clampedRadius : feature.radius,
+    }));
+    if (!previewOps.some((feature) => feature.edgeId === selectedSolidEdge.edgeId)) {
+      previewOps.push({ edgeId: selectedSolidEdge.edgeId, radius: clampedRadius });
+    }
+    const result = buildBodyMeshWithFillets(body, previewOps);
+    if (!result) {
+      setViewportWarning("Fillet failed for this edge/radius");
+      return;
+    }
+
+    commitSceneMutation("Apply Fillet", (snapshot) => {
+      const targetBody = snapshot.solidBodies.find((item) => item.id === selectedSolidEdge.bodyId);
+      if (!targetBody || !isFilletCapableBody(targetBody)) return snapshot;
+      const existingBodyFeatures = snapshot.filletFeatures
+        .filter((feature) => feature.bodyId === targetBody.id)
+        .sort((a, b) => a.order - b.order);
+      const clampedInSnapshot = clampFilletRadius(
+        targetBody,
+        selectedSolidEdge.edgeId,
+        draftRadius
+      );
+      const existingForEdge = existingBodyFeatures.find(
+        (feature) => feature.edgeId === selectedSolidEdge.edgeId
+      );
+      const nextBodyFeatures = existingForEdge
+        ? existingBodyFeatures.map((feature) =>
+            feature.id === existingForEdge.id
+              ? {
+                  ...feature,
+                  radius: clampedInSnapshot,
+                  status: "ok" as const,
+                  dependencies: [targetBody.id, selectedSolidEdge.edgeId],
+                  parameters: {
+                    edgeId: selectedSolidEdge.edgeId,
+                    radius: clampedInSnapshot,
+                  },
+                }
+              : feature
+          )
+        : existingBodyFeatures.concat({
+            id: nextFilletFeatureId(),
+            name: `Fillet ${snapshot.filletFeatures.length + 1}`,
+            bodyId: targetBody.id,
+            edgeId: selectedSolidEdge.edgeId,
+            radius: clampedInSnapshot,
+            status: "ok" as const,
+            order:
+              Math.max(
+                0,
+                ...existingBodyFeatures.map((feature) => feature.order)
+              ) + 1,
+            dependencies: [targetBody.id, selectedSolidEdge.edgeId],
+            parameters: {
+              edgeId: selectedSolidEdge.edgeId,
+              radius: clampedInSnapshot,
+            },
+          });
+      const rebuilt = buildBodyMeshWithFillets(
+        targetBody,
+        nextBodyFeatures.map((feature) => ({
+          edgeId: feature.edgeId,
+          radius: feature.radius,
+        }))
+      );
+      if (!rebuilt) {
+        return snapshot;
+      }
+      const nextBodyIdSet = new Set(nextBodyFeatures.map((feature) => feature.id));
+      const nextFeatures = snapshot.filletFeatures
+        .filter((feature) => feature.bodyId !== targetBody.id || !nextBodyIdSet.has(feature.id))
+        .concat(nextBodyFeatures);
+      const hasFeatureInOrder = (id: string) =>
+        snapshot.featureOrder.some((entry) => entry.kind === "fillet" && entry.id === id);
+      const appendedOrderEntries = nextBodyFeatures
+        .filter((feature) => !hasFeatureInOrder(feature.id))
+        .map((feature) => ({ kind: "fillet" as const, id: feature.id }));
+
+      return {
+        ...snapshot,
+        solidBodies: snapshot.solidBodies.map((item) =>
+          item.id === targetBody.id
+            ? {
+                ...item,
+                profileType: "mesh",
+                meshData: rebuilt.meshData,
+              }
+            : item
+        ),
+        filletFeatures: nextFeatures,
+        featureOrder: snapshot.featureOrder.concat(appendedOrderEntries),
+      };
+    });
+
+    setFilletRadiusDraft(clampedRadius.toFixed(2));
+    setFilletPreviewMeshData(null);
+    setFilletPreviewRadius(null);
+    setFilletMaxRadius(
+      getEdgeDescriptor(body, selectedSolidEdge.edgeId)?.maxRadius ?? null
+    );
+    const selectedFeature = filletFeatures
+      .filter((feature) => feature.bodyId === body.id && feature.edgeId === selectedSolidEdge.edgeId)
+      .at(0);
+    if (selectedFeature) {
+      setSelectedFeatureNode({ kind: "fillet", id: selectedFeature.id });
+    }
+    setViewportWarning("Fillet applied");
+  }, [
+    buildBodyMeshWithFillets,
+    commitSceneMutation,
+    filletFeatures,
+    filletFeaturesByBody,
+    filletRadiusDraft,
+    getEdgeDescriptor,
+    isFilletCapableBody,
+    clampFilletRadius,
+    parsePositiveNumber,
+    selectedSolidEdge,
+    solidBodies,
+    nextFilletFeatureId,
+  ]);
 
   const handleSketchSelectPlaneMode = useCallback(() => {
     if (toolsFlow !== "sketch") return;
@@ -3034,6 +4449,13 @@ function CadWorkspace({
           toolBodyId: toolBody.id,
           operation: booleanOperation,
           resultBodyId: resultBody.id,
+          order: snapshot.featureOrder.length + 1,
+          dependencies: [targetBody.id, toolBody.id],
+          parameters: {
+            targetBodyId: targetBody.id,
+            toolBodyId: toolBody.id,
+            operation: booleanOperation,
+          },
         };
 
         return {
@@ -3104,6 +4526,255 @@ function CadWorkspace({
     [booleanFeatures, handleSelectSolidBody]
   );
 
+  const handleSelectFilletFeature = useCallback(
+    (featureId: string) => {
+      setSelectedFeatureNode({ kind: "fillet", id: featureId });
+      setToolsFlow("fillet");
+      const feature = filletFeatures.find((item) => item.id === featureId);
+      if (!feature) return;
+      handleSelectSolidBody(feature.bodyId);
+      setSelectedSolidEdge({ bodyId: feature.bodyId, edgeId: feature.edgeId });
+      setEntitySelection({ kind: "edge", bodyId: feature.bodyId, edgeId: feature.edgeId });
+      setFilletRadiusDraft(feature.radius.toFixed(2));
+    },
+    [filletFeatures, handleSelectSolidBody]
+  );
+
+  const handleUpdateFilletFeatureRadius = useCallback(
+    (featureId: string, radiusDraft: string) => {
+      const parsed = parsePositiveNumber(radiusDraft);
+      if (!parsed) {
+        setViewportWarning("Enter a valid fillet radius");
+        return;
+      }
+      const feature = filletFeatures.find((item) => item.id === featureId);
+      if (!feature) return;
+      const body = solidBodies.find((item) => item.id === feature.bodyId);
+      if (!body || !isFilletCapableBody(body)) {
+        setViewportWarning("Selected body no longer supports fillet editing");
+        return;
+      }
+      const clampedDraft = clampFilletRadius(body, feature.edgeId, parsed);
+
+      commitSceneMutation("Edit Fillet Radius", (snapshot) => {
+        const currentFeature = snapshot.filletFeatures.find((item) => item.id === featureId);
+        if (!currentFeature) return snapshot;
+        const targetBody = snapshot.solidBodies.find((item) => item.id === currentFeature.bodyId);
+        if (!targetBody || !isFilletCapableBody(targetBody)) return snapshot;
+
+        const nextBodyFeatures = snapshot.filletFeatures
+          .filter((item) => item.bodyId === currentFeature.bodyId)
+          .sort((a, b) => a.order - b.order)
+          .map((item) =>
+            item.id === currentFeature.id
+              ? {
+                  ...item,
+                  radius: clampFilletRadius(targetBody, item.edgeId, parsed),
+                  status: "ok" as const,
+                  dependencies: [targetBody.id, item.edgeId],
+                  parameters: {
+                    edgeId: item.edgeId,
+                    radius: clampFilletRadius(targetBody, item.edgeId, parsed),
+                  },
+                }
+              : item
+          );
+        const rebuilt = buildBodyMeshWithFillets(
+          targetBody,
+          nextBodyFeatures.map((item) => ({ edgeId: item.edgeId, radius: item.radius }))
+        );
+        if (!rebuilt) return snapshot;
+
+        return {
+          ...snapshot,
+          filletFeatures: snapshot.filletFeatures.map((item) => {
+            const next = nextBodyFeatures.find((candidate) => candidate.id === item.id);
+            return next ?? item;
+          }),
+          solidBodies: snapshot.solidBodies.map((item) =>
+            item.id === targetBody.id
+              ? {
+                  ...item,
+                  profileType: "mesh",
+                  meshData: rebuilt.meshData,
+                }
+              : item
+          ),
+        };
+      });
+
+      setFilletRadiusDraft(clampedDraft.toFixed(2));
+      setViewportWarning("Fillet updated");
+    },
+    [
+      buildBodyMeshWithFillets,
+      clampFilletRadius,
+      commitSceneMutation,
+      filletFeatures,
+      isFilletCapableBody,
+      parsePositiveNumber,
+      solidBodies,
+    ]
+  );
+
+  const handleApplyHole = useCallback(() => {
+    if (!selectedSolidFace || !holePlacement) {
+      setViewportWarning("Hole: select a face point first");
+      return;
+    }
+    const diameter = parsePositiveNumber(holeDiameterDraft);
+    const depth = parsePositiveNumber(holeDepthDraft);
+    if (!diameter || !depth) {
+      setViewportWarning("Enter valid hole diameter and depth");
+      return;
+    }
+
+    commitSceneMutation("Apply Hole", (snapshot) => {
+      const targetBody = snapshot.solidBodies.find((body) => body.id === holePlacement.bodyId);
+      if (!targetBody) return snapshot;
+      const editingHoleId =
+        selectedFeatureNode?.kind === "hole" ? selectedFeatureNode.id : null;
+
+      const baseGeometry = collectBodyWorldGeometry(targetBody.id);
+      if (!baseGeometry) return snapshot;
+
+      const existingBodyHoles = snapshot.holeFeatures
+        .filter((feature) => feature.bodyId === targetBody.id && feature.status !== "invalid")
+        .sort((a, b) => a.order - b.order);
+      const nextHoleFeature: HoleFeature = {
+        id: editingHoleId ?? nextHoleFeatureId(),
+        name:
+          existingBodyHoles.find((feature) => feature.id === editingHoleId)?.name ??
+          `Hole ${snapshot.holeFeatures.length + 1}`,
+        bodyId: targetBody.id,
+        faceId: selectedSolidFace.faceId,
+        center: [...holePlacement.center] as Vector3Tuple,
+        normal: [...holePlacement.normal] as Vector3Tuple,
+        diameter,
+        depth,
+        status: "ok",
+        order:
+          existingBodyHoles.find((feature) => feature.id === editingHoleId)?.order ??
+          Math.max(0, ...existingBodyHoles.map((feature) => feature.order)) + 1,
+        dependencies: [targetBody.id, selectedSolidFace.faceId],
+        parameters: {
+          faceId: selectedSolidFace.faceId,
+          diameter,
+          depth,
+        },
+      };
+
+      let rebuilt = baseGeometry.clone();
+      baseGeometry.dispose();
+      const allHoles = editingHoleId
+        ? existingBodyHoles.map((feature) =>
+            feature.id === editingHoleId ? nextHoleFeature : feature
+          )
+        : existingBodyHoles.concat(nextHoleFeature);
+      for (const feature of allHoles) {
+        const next = subtractHoleFromGeometry(
+          rebuilt,
+          feature.center,
+          feature.normal,
+          feature.diameter,
+          feature.depth
+        );
+        rebuilt.dispose();
+        if (!next) {
+          return snapshot;
+        }
+        rebuilt = next;
+      }
+      let finalGeometry = cleanMeshGeometry(rebuilt);
+      rebuilt.dispose();
+      let validation = validateWatertightGeometry(finalGeometry);
+      if (!validation.isWatertight) {
+        const repaired = cleanMeshGeometry(finalGeometry);
+        finalGeometry.dispose();
+        finalGeometry = repaired;
+        validation = validateWatertightGeometry(finalGeometry);
+      }
+      if (!validation.isWatertight) {
+        finalGeometry.dispose();
+        return snapshot;
+      }
+      const meshData = geometryToMeshData(finalGeometry);
+      finalGeometry.dispose();
+      if (meshData.positions.length === 0) return snapshot;
+
+      return {
+        ...snapshot,
+        solidBodies: snapshot.solidBodies.map((body) =>
+          body.id === targetBody.id
+            ? {
+                ...body,
+                profileType: "mesh",
+                meshData,
+                sourceSketchId: null,
+                sourceBooleanFeatureId: body.sourceBooleanFeatureId ?? null,
+                center: [0, 0],
+                planePosition: [0, 0, 0],
+                planeRotation: [0, 0, 0],
+                planeScale: [1, 1, 1],
+                transform: {
+                  position: [0, 0, 0],
+                  rotation: [0, 0, 0],
+                  scale: [1, 1, 1],
+                },
+              }
+            : body
+        ),
+        holeFeatures: editingHoleId
+          ? snapshot.holeFeatures.map((feature) =>
+              feature.id === editingHoleId ? nextHoleFeature : feature
+            )
+          : [...snapshot.holeFeatures, nextHoleFeature],
+        featureOrder: editingHoleId
+          ? snapshot.featureOrder
+          : [...snapshot.featureOrder, { kind: "hole", id: nextHoleFeature.id }],
+      };
+    });
+
+    setViewportWarning(selectedFeatureNode?.kind === "hole" ? "Hole updated" : "Hole applied");
+    setHolePlacement(null);
+    setHolePlacementLocked(false);
+    if (selectedFeatureNode?.kind === "hole") return;
+    setSelectedFeatureNode(null);
+  }, [
+    collectBodyWorldGeometry,
+    commitSceneMutation,
+    holeDepthDraft,
+    holeDiameterDraft,
+    holePlacement,
+    nextHoleFeatureId,
+    parsePositiveNumber,
+    selectedFeatureNode,
+    selectedSolidFace,
+    subtractHoleFromGeometry,
+  ]);
+
+  const handleSelectHoleFeature = useCallback(
+    (featureId: string) => {
+      const feature = holeFeatures.find((item) => item.id === featureId);
+      if (!feature) return;
+      setSelectedFeatureNode({ kind: "hole", id: feature.id });
+      setToolsFlow("hole");
+      setSelectedSolidBodyId(feature.bodyId);
+    setSelectedSolidFace({ bodyId: feature.bodyId, faceId: feature.faceId });
+      setEntitySelection({ kind: "face", bodyId: feature.bodyId, faceId: feature.faceId });
+      setHolePlacement({
+        bodyId: feature.bodyId,
+        faceId: feature.faceId,
+        center: [...feature.center] as Vector3Tuple,
+        normal: [...feature.normal] as Vector3Tuple,
+      });
+      setHolePlacementLocked(true);
+      setHoleDiameterDraft(feature.diameter.toFixed(2));
+      setHoleDepthDraft(feature.depth.toFixed(2));
+    },
+    [holeFeatures]
+  );
+
   const handleSelectFeatureProfile = useCallback(
     (profileId: string) => {
       setToolsFlow("sketch");
@@ -3140,8 +4811,10 @@ function CadWorkspace({
             booleanToolBodyId={booleanToolBodyId}
             booleanPreviewMeshData={booleanPreviewMeshData}
             selectedSketchCircleId={selectedSketchCircleId}
+            selectedSketchCurves={selectedSketchCurves}
             selectedSolidBodyId={selectedSolidBodyId}
             selectedSolidFace={selectedSolidFace}
+            selectedSolidEdge={selectedSolidEdge}
             sketchModeActive={sketchModeActive}
             activeSketchPlane={toolsFlow === "sketch" ? activeSketchPlane : null}
             dimensions={dimensions}
@@ -3150,8 +4823,11 @@ function CadWorkspace({
             planeSelectionEnabled={planeSelectionEnabled}
             onSelectObject={handleSceneSelection}
             onSelectSketchCircle={handleSelectSketchCircle}
+            onSelectSketchCurve={handleSelectSketchCurve}
             onSelectSolidBody={handleSelectSolidBody}
             onSelectSolidFace={handleSelectSolidFace}
+            onHoverSolidFace={handleHoverSolidFace}
+            onSelectSolidEdge={handleSelectSolidEdge}
             onSketchPlanePointerDown={handleSketchPlanePointerDown}
             onSketchPlanePointerMove={handleSketchPlanePointerMove}
             onSketchPlanePointerUp={handleSketchPlanePointerUp}
@@ -3172,6 +4848,12 @@ function CadWorkspace({
             onHoverTransformAxis={setHoveredTransformAxis}
             onTransformAxisPointerDown={handleTransformAxisPointerDown}
             exportRootRef={exportRootRef}
+            designHealthStatusByBody={designHealthStatusByBody}
+            filletModeActive={toolsFlow === "fillet"}
+            filletPreviewBodyId={selectedSolidEdge?.bodyId ?? null}
+            filletPreviewMeshData={filletPreviewMeshData}
+            holeModeActive={toolsFlow === "hole"}
+            holePreview={holePreview}
           />
 
           <DimensionOverlay
@@ -3340,11 +5022,14 @@ function CadWorkspace({
         collapsed={historyCollapsed}
         onToggleCollapsed={() => setHistoryCollapsed((current) => !current)}
         featureTree={featureTree}
+        selectedFeatureDetails={selectedFeatureDetails}
         selectedFeatureNode={selectedFeatureNode}
         selectedProfileId={selectedSketchCircleId}
         onSelectSketchFeature={handleSelectSketchFeature}
         onSelectExtrudeFeature={handleSelectExtrudeFeature}
         onSelectBooleanFeature={handleSelectBooleanFeature}
+        onSelectFilletFeature={handleSelectFilletFeature}
+        onSelectHoleFeature={handleSelectHoleFeature}
         onSelectFeatureProfile={handleSelectFeatureProfile}
         historyEntries={historyEntries}
         historyIndex={historyIndex}
@@ -3363,6 +5048,8 @@ function CadWorkspace({
         onOpenExtrudeFlow={handleOpenExtrudeFlow}
         onOpenBooleanFlow={handleOpenBooleanFlow}
         onOpenMoveFlow={handleOpenMoveFlow}
+        onOpenFilletFlow={handleOpenFilletFlow}
+        onOpenHoleFlow={handleOpenHoleFlow}
         onBackToToolsFlow={handleBackToToolsFlow}
         onDoneSketchFlow={handleDoneSketchFlow}
         sketchPlaneSelectionMode={sketchPlaneSelectionMode}
@@ -3431,9 +5118,39 @@ function CadWorkspace({
         onSnapToOrigin={handleSnapBodyToOrigin}
         onDropToGround={handleDropBodyToGround}
         onCenterAlign={handleCenterAlignBodies}
+        selectedFilletFeatureId={selectedFilletFeature?.id ?? null}
+        selectedBodyFillets={selectedBodyFilletFeatures}
+        onSelectBodyFillet={handleSelectFilletFeature}
+        onUpdateSelectedFilletRadius={() => {
+          if (!selectedFilletFeature) {
+            setViewportWarning("Select a fillet entry first");
+            return;
+          }
+          handleUpdateFilletFeatureRadius(selectedFilletFeature.id, filletRadiusDraft);
+        }}
+        selectedSolidEdge={selectedSolidEdge}
+        filletRadiusDraft={filletRadiusDraft}
+        filletPreviewRadius={filletPreviewRadius}
+        filletMaxRadius={filletMaxRadius}
+        onFilletRadiusDraftChange={setFilletRadiusDraft}
+        onApplyFillet={handleApplyFillet}
+        holeDiameterDraft={holeDiameterDraft}
+        holeDepthDraft={holeDepthDraft}
+        holePlacementReady={!!holePlacement}
+        holePlacementLocked={holePlacementLocked}
+        onHoleDiameterDraftChange={setHoleDiameterDraft}
+        onHoleDepthDraftChange={setHoleDepthDraft}
+        onApplyHole={handleApplyHole}
         moveReferenceBodyId={moveReferenceBodyId}
         onMoveReferenceBodyChange={setMoveReferenceBodyId}
         moveDragActive={!!moveDragState}
+      />
+      <DesignHealthCard
+        visible={!!selectedSolidBody}
+        bodyName={selectedSolidBody?.name ?? null}
+        status={selectedBodyHealthStatus}
+        report={selectedBodyDesignHealth?.report ?? null}
+        durationMs={selectedBodyDesignHealth?.durationMs ?? null}
       />
       {toolsPieOpen && (
         <ToolsPieMenu center={toolsPieCenter} selectedAction={selectedToolAction} />
@@ -3444,6 +5161,70 @@ function CadWorkspace({
           selectedMode={hoveredTransformMode}
         />
       )}
+      {sketchDimensionMode && selectedSketchProfileForDimension ? (
+        <div className="sketch-dimension-editor">
+          <div className="sketch-dimension-editor__title">Dimension Edit</div>
+          <div className="sketch-dimension-editor__subtitle">
+            {selectedSketchProfileForDimension.name}
+          </div>
+          {selectedSketchProfileForDimension.profileType === "circle" ? (
+            <div className="sketch-dimension-editor__grid">
+              <label>
+                Radius (mm)
+                <input
+                  inputMode="decimal"
+                  min={0.1}
+                  step={0.1}
+                  type="number"
+                  value={circleRadiusDraft}
+                  onChange={(event) => applyCircleRadiusDraft(event.target.value)}
+                />
+              </label>
+              <label>
+                Diameter (mm)
+                <input
+                  inputMode="decimal"
+                  min={0.2}
+                  step={0.1}
+                  type="number"
+                  value={circleDiameterDraft}
+                  onChange={(event) => applyCircleDiameterDraft(event.target.value)}
+                />
+              </label>
+            </div>
+          ) : (
+            <div className="sketch-dimension-editor__grid">
+              {dimensionShowWidth ? (
+                <label>
+                  Width (mm)
+                  <input
+                    inputMode="decimal"
+                    min={0.1}
+                    step={0.1}
+                    type="number"
+                    value={rectangleWidthDraft}
+                    onChange={(event) => applyRectangleWidthDraft(event.target.value)}
+                  />
+                </label>
+              ) : null}
+              {dimensionShowHeight ? (
+                <label>
+                  Height (mm)
+                  <input
+                    inputMode="decimal"
+                    min={0.1}
+                    step={0.1}
+                    type="number"
+                    value={rectangleHeightDraft}
+                    onChange={(event) => applyRectangleHeightDraft(event.target.value)}
+                  />
+                </label>
+              ) : null}
+            </div>
+          )}
+          <div className="sketch-dimension-editor__hint">Press Esc to close</div>
+        </div>
+      ) : null}
       {viewportWarning && <ViewportWarning message={viewportWarning} />}
     </div>
   );

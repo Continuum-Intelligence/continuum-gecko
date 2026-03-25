@@ -1,7 +1,10 @@
 import { STLExporter } from "three-stdlib";
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { cleanMeshGeometry, validateWatertightGeometry } from "../cad/utils/booleanCSG";
 
 export const EXPORTABLE_GEOMETRY_FLAG = "exportableDesignGeometry";
+const BODY_ID_FLAG = "designHealthBodyId";
 
 export function exportObjectToStl(
   sourceRoot: THREE.Object3D,
@@ -10,6 +13,8 @@ export function exportObjectToStl(
   sourceRoot.updateWorldMatrix(true, true);
 
   const exportGroup = new THREE.Group();
+  const bodyGeometries = new Map<string, THREE.BufferGeometry[]>();
+  const stagedForDisposal: THREE.BufferGeometry[] = [];
 
   sourceRoot.traverse((node) => {
     if (!(node instanceof THREE.Mesh)) return;
@@ -19,15 +24,47 @@ export function exportObjectToStl(
 
     const transformedGeometry = node.geometry.clone();
     transformedGeometry.applyMatrix4(node.matrixWorld);
+    const cleanedGeometry = cleanMeshGeometry(transformedGeometry);
+    transformedGeometry.dispose();
+    stagedForDisposal.push(cleanedGeometry);
 
-    const exportMesh = new THREE.Mesh(
-      transformedGeometry,
-      new THREE.MeshNormalMaterial()
-    );
+    const bodyId =
+      typeof node.userData?.[BODY_ID_FLAG] === "string"
+        ? (node.userData[BODY_ID_FLAG] as string)
+        : node.uuid;
+    const geometries = bodyGeometries.get(bodyId) ?? [];
+    geometries.push(cleanedGeometry);
+    bodyGeometries.set(bodyId, geometries);
+  });
+
+  bodyGeometries.forEach((geometries) => {
+    if (geometries.length === 0) return;
+
+    const mergedGeometry =
+      geometries.length === 1
+        ? geometries[0].clone()
+        : mergeGeometries(geometries, false);
+    if (!mergedGeometry) return;
+    stagedForDisposal.push(mergedGeometry);
+
+    const cleanedMerged = cleanMeshGeometry(mergedGeometry);
+    stagedForDisposal.push(cleanedMerged);
+    const validation = validateWatertightGeometry(cleanedMerged);
+    if (!validation.isWatertight) {
+      console.warn(
+        "[STL Export] Non-watertight body exported",
+        validation
+      );
+    }
+
+    const exportMesh = new THREE.Mesh(cleanedMerged.clone(), new THREE.MeshNormalMaterial());
     exportGroup.add(exportMesh);
   });
 
-  if (exportGroup.children.length === 0) return false;
+  if (exportGroup.children.length === 0) {
+    stagedForDisposal.forEach((geometry) => geometry.dispose());
+    return false;
+  }
 
   const exporter = new STLExporter();
   const stlData = exporter.parse(exportGroup);
@@ -46,6 +83,7 @@ export function exportObjectToStl(
       node.material.dispose();
     }
   });
+  stagedForDisposal.forEach((geometry) => geometry.dispose());
 
   return true;
 }

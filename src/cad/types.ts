@@ -10,6 +10,19 @@ export type ToolPieAction = "none" | "createWorkPlane";
 export type SketchTool = "circle" | "rectangle" | null;
 export type SketchProfileType = "circle" | "rectangle";
 export type BodyFaceId = "top" | "bottom" | "side";
+export type FilletEdgeId =
+  | "top-front"
+  | "top-back"
+  | "top-left"
+  | "top-right"
+  | "bottom-front"
+  | "bottom-back"
+  | "bottom-left"
+  | "bottom-right"
+  | "vertical-front-left"
+  | "vertical-front-right"
+  | "vertical-back-left"
+  | "vertical-back-right";
 export type BooleanOperation = "union" | "subtract" | "intersect";
 
 export type TransformMode = "move" | "rotate" | "scale" | null;
@@ -17,6 +30,27 @@ export type TransformMode = "move" | "rotate" | "scale" | null;
 export type TransformAxis = "x" | "y" | "z" | null;
 
 export type Vector3Tuple = [number, number, number];
+
+export type SnapKind =
+  | "origin"
+  | "grid"
+  | "body-center"
+  | "ground"
+  | "face";
+
+export type SnapSettings = {
+  enabled: boolean;
+  grid: boolean;
+  origin: boolean;
+  body: boolean;
+};
+
+export type SnapVisualHint = {
+  kind: SnapKind;
+  label: string;
+  point: Vector3Tuple;
+  from?: Vector3Tuple;
+};
 
 export type BodyTransform = {
   position: Vector3Tuple;
@@ -110,8 +144,16 @@ export type SolidBody = {
 
 export type CadEntitySelection =
   | { kind: "profile"; profileId: string }
+  | {
+      kind: "sketch-curve";
+      profileId: string;
+      profileType: SketchProfileType;
+      curveKind: "circle" | "rectangle-edge";
+      edgeId?: "top" | "right" | "bottom" | "left";
+    }
   | { kind: "body"; bodyId: string }
   | { kind: "face"; bodyId: string; faceId: BodyFaceId }
+  | { kind: "edge"; bodyId: string; edgeId: FilletEdgeId }
   | null;
 
 export type SketchFeature = {
@@ -119,6 +161,12 @@ export type SketchFeature = {
   name: string;
   planeId: string;
   profileIds: string[];
+  order: number;
+  dependencies: string[];
+  parameters: {
+    planeId: string;
+    profileIds: string[];
+  };
 };
 
 export type ExtrudeFeature = {
@@ -128,6 +176,13 @@ export type ExtrudeFeature = {
   bodyId: string;
   depth: number;
   direction: 1 | -1;
+  order: number;
+  dependencies: string[];
+  parameters: {
+    sourceProfileId: string;
+    depth: number;
+    direction: 1 | -1;
+  };
 };
 
 export type BooleanFeature = {
@@ -137,10 +192,51 @@ export type BooleanFeature = {
   toolBodyId: string;
   operation: BooleanOperation;
   resultBodyId: string;
+  order: number;
+  dependencies: string[];
+  parameters: {
+    targetBodyId: string;
+    toolBodyId: string;
+    operation: BooleanOperation;
+  };
+};
+
+export type FilletFeature = {
+  id: string;
+  name: string;
+  bodyId: string;
+  edgeId: FilletEdgeId;
+  radius: number;
+  status: "ok" | "invalid";
+  order: number;
+  dependencies: string[];
+  parameters: {
+    edgeId: FilletEdgeId;
+    radius: number;
+  };
+};
+
+export type HoleFeature = {
+  id: string;
+  name: string;
+  bodyId: string;
+  faceId: BodyFaceId;
+  center: Vector3Tuple;
+  normal: Vector3Tuple;
+  diameter: number;
+  depth: number;
+  status: "ok" | "invalid";
+  order: number;
+  dependencies: string[];
+  parameters: {
+    faceId: BodyFaceId;
+    diameter: number;
+    depth: number;
+  };
 };
 
 export type FeatureOrderItem = {
-  kind: "sketch" | "extrude" | "boolean";
+  kind: "sketch" | "extrude" | "boolean" | "fillet" | "hole";
   id: string;
 };
 
@@ -167,6 +263,8 @@ export type SceneSnapshot = {
   solidBodies: SolidBody[];
   extrudeFeatures: ExtrudeFeature[];
   booleanFeatures: BooleanFeature[];
+  filletFeatures: FilletFeature[];
+  holeFeatures: HoleFeature[];
   featureOrder: FeatureOrderItem[];
   dimensions: DistanceDimension[];
   primarySelection: SceneSelection;

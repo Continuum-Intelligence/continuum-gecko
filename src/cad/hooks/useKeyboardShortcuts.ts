@@ -58,6 +58,7 @@ type ShortcutArgs = {
   dimensionsRef: React.RefObject<
     { from: SceneSelection; to: SceneSelection }[]
   >;
+  onDimensionShortcut?: () => boolean;
 };
 
 export function useKeyboardShortcuts(args: ShortcutArgs) {
@@ -256,6 +257,9 @@ export function useKeyboardShortcuts(args: ShortcutArgs) {
         !inspectorInputActive
       ) {
         event.preventDefault();
+        if (args.onDimensionShortcut?.()) {
+          return;
+        }
 
         if (
           !isDimensionEligibleSelection(args.selectedObject) ||
